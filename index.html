@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>บัญชีรายรับ-รายจ่าย ปี ๒๕๖๙</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { theme: { extend: { fontFamily: { thai: ['Sarabun','sans-serif'] } } } }</script>
+<style>
+  * { font-family: 'Sarabun', sans-serif; }
+  ::-webkit-scrollbar { width:5px }
+  ::-webkit-scrollbar-track { background:#f1f5f9 }
+  ::-webkit-scrollbar-thumb { background:#94a3b8; border-radius:3px }
+  .fade-in { animation: fadeIn 0.15s ease-out }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  .day-cell { transition: all 0.12s; cursor:pointer }
+  .day-cell:hover { transform:scale(1.03); box-shadow:0 4px 12px rgba(0,0,0,.1) }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none }
+  input[type=number] { -moz-appearance:textfield }
+
+  /* ─────── PRINT STYLES ─────── */
+  @media print {
+    .no-print { display:none !important }
+    #app { display:none !important }
+    #print-root { display:block !important }
+    body { background:white !important; margin:0; padding:0 }
+    * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; color-adjust:exact !important }
+    @page { size: A4 portrait; margin: 10mm 8mm }
+    @page landscape { size: A4 landscape; margin: 8mm }
+  }
+  #print-root { display:none }
+
+  /* Print calendar styles */
+  .p-cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; }
+  .p-cal-header { text-align:center; font-weight:700; padding:4px 2px; font-size:11px }
+  .p-cal-cell { border:1px solid #d1d5db; padding:3px; min-height:85px; background:white; page-break-inside:avoid; font-size:10px }
+  .p-cal-day { font-weight:700; font-size:13px; line-height:1; margin-bottom:3px }
+  .p-entry { padding:1px 0; line-height:1.3; font-size:9px }
+  .p-entry-co { color:#1d4ed8; font-size:8px }
+  .p-entry-cat { color:#6b7280; font-size:8px }
+  .p-entry-desc { color:#9ca3af; font-size:8px; font-style:italic }
+
+  .p-sum-row { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid #f3f4f6; font-size:12px }
+  .p-sum-row.bold { font-weight:700; font-size:13px }
+  .p-sum-row.section { background:#f8fafc; padding:6px 8px; border-radius:4px; margin:4px 0; font-weight:700 }
+  .p-sum-row.indent { padding-left:20px; font-size:11px }
+  .p-sum-row.total-box { background:#1e3a8a; color:white; padding:10px; border-radius:6px; margin-top:8px; font-size:14px }
+</style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+
+<!-- App root -->
+<div id="app"></div>
+
+<!-- Print root (hidden on screen, shown when printing) -->
+<div id="print-root"></div>
+
+<script type="module">
+import { h, render } from 'https://esm.sh/preact@10.23.2'
+import { useState, useCallback } from 'https://esm.sh/preact@10.23.2/hooks'
+import htm from 'https://esm.sh/htm@3.1.1'
+const html = htm.bind(h)
+
+/* ══════════════════════════════════════
+   CONSTANTS
+══════════════════════════════════════ */
+const CE_YEAR = 2026, BE_YEAR = 2569
+const STORAGE_KEY = 'budget-2569-v4'
+const MONTHS_TH  = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม']
+const MONTHS_SHORT = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.']
+const DAY_NAMES  = ['อา','จ','อ','พ','พฤ','ศ','ส']
+const DAY_FULL   = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์']
+const INC_CATS   = ['เงินเดือน','โบนัส','ค่าล่วงเวลา','เงินได้อื่นๆ']
+const EXP_CATS   = ['ค่าอาหาร','ค่าน้ำมัน','Easypass','ค่าสาธารณูปโภค','ค่าของใช้','ความบันเทิง','อื่นๆ']
+
+/* ══════════════════════════════════════
+   HELPERS
+══════════════════════════════════════ */
+const genId   = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
+const dim     = m  => new Date(CE_YEAR, m+1, 0).getDate()
+const fdow    = m  => new Date(CE_YEAR, m, 1).getDay()
+const dowOf   = (m,d) => new Date(CE_YEAR, m, d).getDay()
+const isWE    = (m,d) => dowOf(m,d) === 0  // อาทิตย์เท่านั้น → จ-ส เป็นค่าอาหารวันธรรมดา
+const cntWD   = m  => { let c=0; for(let d=1;d<=dim(m);d++) if(!isWE(m,d)) c++; return c }
+const cntWE   = m  => { let c=0; for(let d=1;d<=dim(m);d++) if(isWE(m,d)) c++; return c }
+const fmt     = n  => Number(n||0).toLocaleString('th-TH',{minimumFractionDigits:0,maximumFractionDigits:0})
+const fmtDate = (m,d) => `${DAY_FULL[dowOf(m,d)]}ที่ ${d} ${MONTHS_TH[m]} ${BE_YEAR}`
+
+const defSettings = () => ({ openingBalance:0, salary:0, foodWeekdayRate:0, foodWeekendRate:0, fuel:0, easypass:0, customItems:[] })
+
+const loadState = () => {
+  try {
+    const p = JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')
+    const months = {}
+    for (let i=0;i<12;i++) months[i] = { settings:{...defSettings(),...(p.months?.[i]?.settings||{})}, days:p.months?.[i]?.days||{} }
+    return { months }
+  } catch { }
+  const months = {}; for(let i=0;i<12;i++) months[i]={settings:defSettings(),days:{}}; return {months}
+}
+const saveState = s => localStorage.setItem(STORAGE_KEY, JSON.stringify(s))
+
+/* ══════════════════════════════════════
+   REDUCER / DISPATCH
+══════════════════════════════════════ */
+function applyAction(prev, action) {
+  const { months } = prev
+  const m = action.month
+  const mo = months[m]
+  const upMonth = patch => ({ ...prev, months: { ...months, [m]: { ...mo, ...patch } } })
+  const upSettings = patch => upMonth({ settings: { ...mo.settings, ...patch } })
+
+  switch(action.type) {
+    case 'UPDATE_SETTINGS': return upSettings(action.settings)
+    case 'ADD_CUSTOM_ITEM': return upSettings({ customItems: [...(mo.settings.customItems||[]), {...action.item, id:genId()}] })
+    case 'REMOVE_CUSTOM_ITEM': return upSettings({ customItems: (mo.settings.customItems||[]).filter(c=>c.id!==action.itemId) })
+    case 'UPDATE_CUSTOM_ITEM': return upSettings({ customItems: (mo.settings.customItems||[]).map(c=>c.id===action.itemId?{...c,...action.updates}:c) })
+    case 'ADD_ENTRY': {
+      const dk=String(action.day), ex=mo.days[dk]||[]
+      return upMonth({ days:{...mo.days,[dk]:[...ex,{...action.entry,id:genId()}]} })
+    }
+    case 'REMOVE_ENTRY': {
+      const dk=String(action.day)
+      return upMonth({ days:{...mo.days,[dk]:(mo.days[dk]||[]).filter(e=>e.id!==action.entryId)} })
+    }
+    case 'UPDATE_ENTRY': {
+      const dk=String(action.day)
+      return upMonth({ days:{...mo.days,[dk]:(mo.days[dk]||[]).map(e=>e.id===action.entryId?{...e,...action.updates}:e)} })
+    }
+    default: return prev
+  }
+}
+
+/* ══════════════════════════════════════
+   PRINT HELPERS
+══════════════════════════════════════ */
+function buildSummaryData(state, month) {
+  const s = state.months[month].settings
+  const allE = []
+  for (const [d,entries] of Object.entries(state.months[month].days||{})) entries.forEach(e=>allE.push({...e,day:Number(d)}))
+  const incE = allE.filter(e=>e.type==='income'), expE = allE.filter(e=>e.type==='expense')
+  const wdays = cntWD(month), wends = cntWE(month)
+  const customInc = (s.customItems||[]).filter(c=>c.type==='income')
+  const customExp = (s.customItems||[]).filter(c=>c.type==='expense')
+  const foodWD = Number(s.foodWeekdayRate||0)*wdays
+  const foodWE = Number(s.foodWeekendRate||0)*wends
+  const fuelF  = Number(s.fuel||0), easyF = Number(s.easypass||0)
+  const salF   = Number(s.salary||0)
+  const totIncE = incE.reduce((a,e)=>a+Number(e.amount),0)
+  const totExpE = expE.reduce((a,e)=>a+Number(e.amount),0)
+  const totCustInc = customInc.reduce((a,c)=>a+Number(c.amount),0)
+  const totCustExp = customExp.reduce((a,c)=>a+Number(c.amount),0)
+  const totalInc = salF + totIncE + totCustInc
+  const totalExp = foodWD + foodWE + fuelF + easyF + totExpE + totCustExp
+  const net = totalInc - totalExp
+  const endBal = Number(s.openingBalance||0) + net
+  const grpByCat = arr => { const m={}; arr.forEach(e=>{const c=e.category||'อื่นๆ';m[c]=(m[c]||0)+Number(e.amount)}); return Object.entries(m) }
+  return { s, wdays, wends, foodWD, foodWE, fuelF, easyF, salF, incE, expE, customInc, customExp,
+           totIncE, totExpE, totalInc, totalExp, net, endBal, grpByCat }
+}
+
+function doPrint(state, month, mode) {
+  const { s, wdays, wends, foodWD, foodWE, fuelF, easyF, salF, incE, expE,
+          customInc, customExp, totalInc, totalExp, net, endBal, grpByCat } = buildSummaryData(state, month)
+
+  /* ── print CSS (inline into new window) ── */
+  const CSS = `
+    *{font-family:'Sarabun',sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box}
+    body{margin:0;padding:10mm 8mm;background:white}
+    @page{size:A4 portrait;margin:10mm 8mm}
+    h1{margin:0}
+    .hdr{display:flex;align-items:flex-start;justify-content:space-between;border-bottom:3px solid #1e3a8a;padding-bottom:8px;margin-bottom:12px}
+    .hdr h1{font-size:20px;font-weight:800;color:#1e3a8a}
+    .hdr .sub{font-size:13px;color:#64748b}
+    .hdr .date{font-size:10px;color:#94a3b8;text-align:right}
+    /* calendar */
+    .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+    .cal-head{text-align:center;font-weight:700;font-size:10px;padding:3px 1px}
+    .cal-cell{border:1px solid #d1d5db;padding:3px;min-height:78px;vertical-align:top;page-break-inside:avoid}
+    .cal-num{font-weight:700;font-size:12px;line-height:1;margin-bottom:2px}
+    .entry{font-size:8.5px;line-height:1.4;padding:0}
+    .entry-co{color:#1d4ed8;font-size:8px}
+    .entry-cat{color:#6b7280;font-size:8px}
+    .entry-desc{color:#9ca3af;font-size:8px;font-style:italic}
+    /* summary */
+    .section{margin-bottom:14px}
+    .section-title{font-weight:700;font-size:13px;border-left:4px solid;padding-left:8px;margin-bottom:6px}
+    .row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:12px}
+    .row.indent{padding-left:18px;font-size:11px}
+    .row.bold{font-weight:700;border-top:2px solid #e5e7eb;margin-top:4px;padding-top:6px;font-size:13px}
+    .box{padding:10px 14px;border-radius:8px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+  `
+
+  const today = new Date().toLocaleDateString('th-TH',{year:'numeric',month:'long',day:'numeric'})
+
+  /* ── calendar HTML ── */
+  const calHTML = () => {
+    const total=dim(month), first=fdow(month)
+    const cells=[...Array(first).fill(null),...Array.from({length:total},(_,i)=>i+1)]
+    while(cells.length%7!==0) cells.push(null)
+    const heads = DAY_NAMES.map((n,i)=>`
+      <div class="cal-head" style="color:${i===0?'#ef4444':i===6?'#f97316':'#374151'};background:${i===0?'#fef2f2':i===6?'#fff7ed':'#f3f4f6'}">${n}</div>
+    `).join('')
+    const body = cells.map(d=>{
+      if(!d) return `<div style="border:1px solid transparent;min-height:78px"></div>`
+      const entries=state.months[month].days[String(d)]||[]
+      const w=dowOf(month,d),isSun=w===0,isSat=w===6
+      const bg=isSun?'#fef2f2':isSat?'#fff7ed':'white'
+      const nc=isSun?'#ef4444':isSat?'#f97316':'#111827'
+      const eHTML=entries.map(e=>`
+        <div class="entry" style="color:${e.type==='income'?'#15803d':'#dc2626'}">
+          ${e.type==='income'?'▲':'▼'}&nbsp;<b>${fmt(e.amount)}฿</b>
+          ${e.companyName?`<span class="entry-co"> 🏢${e.companyName}</span>`:''}
+          <span class="entry-cat"> ${e.category||''}</span>
+          ${e.description?`<span class="entry-desc"> — ${e.description}</span>`:''}
+        </div>`).join('')
+      return `<div class="cal-cell" style="background:${bg}"><div class="cal-num" style="color:${nc}">${d}</div>${eHTML}</div>`
+    }).join('')
+    return `
+      <div class="hdr">
+        <div><h1>📅 ปฏิทินรายรับ-รายจ่าย</h1><div class="sub">${MONTHS_TH[month]} พ.ศ. ${BE_YEAR}</div></div>
+        <div class="date">พิมพ์วันที่ ${today}</div>
+      </div>
+      <div class="cal-grid">${heads}${body}</div>`
+  }
+
+  /* ── summary HTML ── */
+  const sumHTML = () => {
+    const gI=grpByCat(incE), gE=grpByCat(expE)
+    const netColor=net>=0?'#15803d':'#dc2626'
+    return `
+      <div style="max-width:600px;margin:0 auto">
+        <div class="hdr">
+          <div><h1>📊 สรุปรายรับ-รายจ่าย</h1><div class="sub">${MONTHS_TH[month]} พ.ศ. ${BE_YEAR}</div></div>
+          <div class="date">พิมพ์วันที่ ${today}</div>
+        </div>
+        <div class="section">
+          <div class="section-title" style="border-color:#3b82f6;color:#1e3a8a">เงินในบัญชี</div>
+          <div class="row indent"><span>เงินในบัญชี (ยกมา)</span><span style="color:#1d4ed8;font-weight:600">${fmt(s.openingBalance||0)} ฿</span></div>
+        </div>
+        <div class="section">
+          <div class="section-title" style="border-color:#22c55e;color:#15803d">รายรับ</div>
+          <div class="row indent"><span>เงินเดือน</span><span style="color:#15803d">+${fmt(salF)} ฿</span></div>
+          ${customInc.map(c=>`<div class="row indent"><span>${c.name}</span><span style="color:#15803d">+${fmt(c.amount)} ฿</span></div>`).join('')}
+          ${gI.map(([cat,tot])=>`<div class="row indent"><span>${cat} (จากปฏิทิน)</span><span style="color:#15803d">+${fmt(tot)} ฿</span></div>`).join('')}
+          <div class="row bold" style="color:#15803d"><span>รายรับรวม</span><span>+${fmt(totalInc)} ฿</span></div>
+        </div>
+        <div class="section">
+          <div class="section-title" style="border-color:#ef4444;color:#dc2626">รายจ่าย</div>
+          <div class="row indent"><span>ค่าอาหาร จ-ส (${wdays} วัน × ${fmt(s.foodWeekdayRate||0)} ฿)</span><span style="color:#dc2626">-${fmt(foodWD)} ฿</span></div>
+          <div class="row indent"><span>ค่าอาหาร อา (${wends} วัน × ${fmt(s.foodWeekendRate||0)} ฿)</span><span style="color:#dc2626">-${fmt(foodWE)} ฿</span></div>
+          <div class="row indent"><span>ค่าน้ำมัน</span><span style="color:#dc2626">-${fmt(fuelF)} ฿</span></div>
+          <div class="row indent"><span>ค่า Easypass</span><span style="color:#dc2626">-${fmt(easyF)} ฿</span></div>
+          ${customExp.map(c=>`<div class="row indent"><span>${c.name}</span><span style="color:#dc2626">-${fmt(c.amount)} ฿</span></div>`).join('')}
+          ${gE.map(([cat,tot])=>`<div class="row indent"><span>${cat} (จากปฏิทิน)</span><span style="color:#dc2626">-${fmt(tot)} ฿</span></div>`).join('')}
+          <div class="row bold" style="color:#dc2626"><span>รายจ่ายรวม</span><span>-${fmt(totalExp)} ฿</span></div>
+        </div>
+        <div class="box" style="background:${net>=0?'#dcfce7':'#fee2e2'}">
+          <span style="font-weight:700;font-size:15px;color:${netColor}">${net>=0?'✅ กำไรสุทธิ':'❌ ขาดทุนสุทธิ'}</span>
+          <span style="font-weight:800;font-size:20px;color:${netColor}">${fmt(Math.abs(net))} ฿</span>
+        </div>
+        <div class="box" style="background:#1e3a8a;color:white">
+          <span style="font-weight:700;font-size:14px">ยอดเงินคงเหลือ (ปลายเดือน)</span>
+          <span style="font-weight:800;font-size:20px">${fmt(endBal)} ฿</span>
+        </div>
+      </div>`
+  }
+
+  /* ── open new window and print ── */
+  let body = ''
+  if (mode==='calendar') body = calHTML()
+  else if (mode==='summary') body = sumHTML()
+  else body = calHTML() + `<div style="page-break-before:always;padding-top:4px">` + sumHTML() + `</div>`
+
+  const win = window.open('','_blank','width=900,height=700')
+  if (!win) { alert('กรุณาอนุญาต Popup ของ Browser เพื่อใช้งานการพิมพ์\n(ดูที่แถบที่อยู่ด้านบน แล้วกด Allow)'); return }
+  win.document.write(`<!DOCTYPE html><html lang="th"><head>
+    <meta charset="UTF-8">
+    <title>บัญชีรายรับ-รายจ่าย ${MONTHS_TH[month]} ${BE_YEAR}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <style>${CSS}</style>
+  </head><body>${body}<script>
+    document.fonts.ready.then(function(){ setTimeout(function(){ window.print(); }, 400); });
+  <\/script></body></html>`)
+  win.document.close()
+}
+
+/* ══════════════════════════════════════
+   MODAL BASE
+══════════════════════════════════════ */
+function Modal({ onClose, title, subtitle, accent='bg-gradient-to-r from-blue-800 to-blue-600', children, footer }) {
+  return html`
+    <div class="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick=${onClose}></div>
+      <div class="fade-in relative bg-white w-full sm:max-w-md sm:rounded-2xl rounded-t-2xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden">
+        <div class="px-5 py-4 ${accent} text-white flex-shrink-0">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="text-lg font-bold">${title}</div>
+              ${subtitle && html`<div class="text-white/70 text-sm">${subtitle}</div>`}
+            </div>
+            <button onClick=${onClose} class="w-8 h-8 flex items-center justify-center rounded-full bg-white/20 hover:bg-white/30 text-white text-xl transition-colors">✕</button>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto">${children}</div>
+        ${footer && html`<div class="flex-shrink-0 border-t px-5 py-4 bg-white">${footer}</div>`}
+      </div>
+    </div>
+  `
+}
+
+/* ══════════════════════════════════════
+   DAY MODAL  (+ companyName field)
+══════════════════════════════════════ */
+function DayModal({ month, day, state, dispatch, onClose }) {
+  const entries = state.months[month].days[String(day)] || []
+  const weekend = isWE(month, day)
+  const [showForm, setShowForm] = useState(false)
+  const [eType,   setEType]   = useState('expense')
+  const [cat,     setCat]     = useState('ค่าอาหาร')
+  const [custCat, setCustCat] = useState('')
+  const [company, setCompany] = useState('')   // ← NEW: ชื่อบริษัท/ลูกค้า
+  const [desc,    setDesc]    = useState('')
+  const [amount,  setAmount]  = useState('')
+  const [editId,  setEditId]  = useState(null)
+
+  const totalInc = entries.filter(e=>e.type==='income').reduce((s,e)=>s+Number(e.amount),0)
+  const totalExp = entries.filter(e=>e.type==='expense').reduce((s,e)=>s+Number(e.amount),0)
+  const cats = eType==='income' ? INC_CATS : EXP_CATS
+
+  const reset = () => { setShowForm(false); setEditId(null); setAmount(''); setDesc(''); setCat('ค่าอาหาร'); setCustCat(''); setCompany(''); setEType('expense') }
+
+  const startEdit = e => {
+    setEditId(e.id); setEType(e.type); setCat(e.category); setDesc(e.description||'')
+    setCompany(e.companyName||''); setAmount(String(e.amount)); setCustCat(''); setShowForm(true)
+  }
+
+  const chgType = t => { setEType(t); setCat(t==='income'?'เงินเดือน':'ค่าอาหาร'); setCustCat(''); setCompany('') }
+
+  const effCat = () => cat==='__custom__' ? custCat : cat
+
+  const save = () => {
+    const fc = effCat()
+    if (!fc || !amount || Number(amount)<=0) return
+    const entry = { type:eType, category:fc, companyName:company.trim(), description:desc, amount:Number(amount) }
+    if (editId) dispatch({ type:'UPDATE_ENTRY', month, day, entryId:editId, updates:entry })
+    else        dispatch({ type:'ADD_ENTRY', month, day, entry })
+    setAmount(''); setDesc(''); setCompany(''); setEditId(null)
+    setCat(eType==='income'?'เงินเดือน':'ค่าอาหาร'); setCustCat('')
+  }
+
+  const accent = weekend
+    ? 'bg-gradient-to-r from-orange-600 to-orange-400'
+    : 'bg-gradient-to-r from-blue-800 to-blue-600'
+
+  return html`<${Modal} onClose=${onClose} accent=${accent}
+    title=${fmtDate(month, day)}
+    subtitle=${totalInc>0||totalExp>0 ? html`
+      ${totalInc>0?html`<span class="text-green-200">+${fmt(totalInc)} ฿ </span>`:''}
+      ${totalExp>0?html`<span class="text-red-200">-${fmt(totalExp)} ฿</span>`:''}
+    ` : 'ยังไม่มีรายการ'}
+  >
+    <div class="p-4 space-y-2">
+      ${entries.length===0 && !showForm && html`
+        <div class="text-center py-8 text-gray-300">
+          <div class="text-4xl mb-2">📋</div>
+          <div class="text-sm">ยังไม่มีรายการวันนี้</div>
+        </div>
+      `}
+
+      ${entries.map(e=>html`
+        <div key=${e.id} class="flex items-start gap-3 p-3 rounded-xl border fade-in ${e.type==='income'?'bg-green-50 border-green-100':'bg-red-50 border-red-100'}">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${e.type==='income'?'bg-green-100 text-green-700':'bg-red-100 text-red-600'}">
+                ${e.type==='income'?'▲ รับ':'▼ จ่าย'}
+              </span>
+              <span class="text-sm font-medium text-gray-700">${e.category||''}</span>
+            </div>
+            ${e.companyName && html`
+              <div class="flex items-center gap-1 mt-1 ml-1">
+                <span class="text-xs">🏢</span>
+                <span class="text-xs font-semibold text-blue-600">${e.companyName}</span>
+              </div>
+            `}
+            ${e.description && html`<div class="text-xs text-gray-400 mt-0.5 ml-1 italic">${e.description}</div>`}
+          </div>
+          <div class="flex items-center gap-1.5 flex-shrink-0 pt-0.5">
+            <span class="font-mono font-bold text-sm ${e.type==='income'?'text-green-600':'text-red-500'}">
+              ${e.type==='income'?'+':'-'}${fmt(e.amount)}
+            </span>
+            <button onClick=${()=>startEdit(e)} class="w-7 h-7 flex items-center justify-center rounded-full bg-blue-100 hover:bg-blue-200 text-blue-600 text-xs" title="แก้ไข">✎</button>
+            <button onClick=${()=>dispatch({type:'REMOVE_ENTRY',month,day,entryId:e.id})} class="w-7 h-7 flex items-center justify-center rounded-full bg-red-100 hover:bg-red-200 text-red-500 text-xs" title="ลบ">✕</button>
+          </div>
+        </div>
+      `)}
+
+      ${showForm ? html`
+        <div class="bg-gray-50 rounded-xl p-4 border border-gray-200 fade-in">
+          <div class="font-bold text-gray-700 mb-3 text-sm">${editId?'✎ แก้ไขรายการ':'+ เพิ่มรายการ'}</div>
+
+          <!-- Type -->
+          <div class="flex gap-2 mb-3">
+            <button onClick=${()=>chgType('income')} class="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors ${eType==='income'?'bg-green-500 text-white shadow-sm':'bg-white text-gray-500 border border-gray-200 hover:bg-green-50'}">▲ รายรับ</button>
+            <button onClick=${()=>chgType('expense')} class="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors ${eType==='expense'?'bg-red-500 text-white shadow-sm':'bg-white text-gray-500 border border-gray-200 hover:bg-red-50'}">▼ รายจ่าย</button>
+          </div>
+
+          <!-- Category -->
+          <div class="mb-3">
+            <label class="text-xs font-semibold text-gray-500 mb-1.5 block">หมวดหมู่</label>
+            <div class="flex flex-wrap gap-1.5">
+              ${cats.map(c=>html`
+                <button key=${c} onClick=${()=>{setCat(c);setCustCat('')}}
+                  class="px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${cat===c?(eType==='income'?'bg-green-500 text-white':'bg-red-500 text-white'):'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'}">
+                  ${c}
+                </button>
+              `)}
+              <button onClick=${()=>setCat('__custom__')} class="px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${cat==='__custom__'?'bg-blue-500 text-white':'bg-white border border-gray-200 text-gray-600'}">
+                + กำหนดเอง
+              </button>
+            </div>
+            ${cat==='__custom__' && html`
+              <input value=${custCat} onInput=${e=>setCustCat(e.target.value)} placeholder="ระบุหมวดหมู่"
+                class="mt-2 border border-blue-300 rounded-lg px-3 py-1.5 w-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" autoFocus />
+            `}
+          </div>
+
+          <!-- ★ Company Name (NEW) -->
+          <div class="mb-3">
+            <label class="text-xs font-semibold text-gray-500 mb-1.5 flex items-center gap-1">
+              <span>🏢</span> ชื่อบริษัท / ลูกค้า <span class="text-gray-300 font-normal">(ไม่บังคับ)</span>
+            </label>
+            <input value=${company} onInput=${e=>setCompany(e.target.value)}
+              placeholder="เช่น บ.สยามพาณิชย์, คุณสมชาย"
+              class="border border-gray-200 rounded-lg px-3 py-1.5 w-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" />
+          </div>
+
+          <!-- Description -->
+          <div class="mb-3">
+            <label class="text-xs font-semibold text-gray-500 mb-1.5 block">รายละเอียด <span class="text-gray-300 font-normal">(ไม่บังคับ)</span></label>
+            <input value=${desc} onInput=${e=>setDesc(e.target.value)} placeholder="เช่น ข้าวกลางวัน, ค่า invoice #123"
+              class="border border-gray-200 rounded-lg px-3 py-1.5 w-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" />
+          </div>
+
+          <!-- Amount -->
+          <div class="mb-3">
+            <label class="text-xs font-semibold text-gray-500 mb-1.5 block">จำนวนเงิน (บาท)</label>
+            <div class="relative">
+              <input type="number" value=${amount} onInput=${e=>setAmount(e.target.value)}
+                placeholder="0" min="0"
+                class="border border-gray-200 rounded-lg px-3 py-2 w-full text-right pr-8 text-lg font-bold focus:outline-none focus:ring-2 focus:ring-blue-300"
+                autoFocus=${!editId} onKeyDown=${e=>e.key==='Enter'&&save()} />
+              <span class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">฿</span>
+            </div>
+          </div>
+
+          <!-- Quick amounts -->
+          <div class="flex gap-1 mb-4">
+            ${[50,100,200,500,1000,2000,5000].map(v=>html`
+              <button key=${v} onClick=${()=>setAmount(String(v))}
+                class="flex-1 py-1.5 bg-white border border-gray-200 rounded-lg text-xs text-gray-600 hover:border-blue-300 hover:text-blue-600 transition-colors min-w-0">
+                ${v>=1000?`${v/1000}k`:v}
+              </button>
+            `)}
+          </div>
+
+          <!-- Actions -->
+          <div class="flex gap-2">
+            <button onClick=${save} disabled=${!amount||Number(amount)<=0||!effCat()}
+              class="flex-1 py-2.5 rounded-xl font-bold text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${eType==='income'?'bg-green-500 hover:bg-green-600':'bg-red-500 hover:bg-red-600'}">
+              ${editId?'💾 บันทึก':(eType==='income'?'+ รายรับ':'+ รายจ่าย')}
+            </button>
+            <button onClick=${reset} class="px-4 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-medium hover:bg-gray-200 transition-colors">ยกเลิก</button>
+          </div>
+        </div>
+      ` : html`
+        <button onClick=${()=>setShowForm(true)}
+          class="w-full py-3 border-2 border-dashed border-blue-200 text-blue-400 rounded-xl hover:border-blue-400 hover:text-blue-600 transition-colors font-medium text-sm">
+          + เพิ่มรายการรายรับ / รายจ่าย
+        </button>
+      `}
+    </div>
+  </>`
+}
+
+/* ══════════════════════════════════════
+   SETTINGS MODAL
+══════════════════════════════════════ */
+function SettingsModal({ month, state, dispatch, onClose }) {
+  const s = state.months[month].settings
+  const [form, setForm] = useState({ openingBalance:s.openingBalance||0, salary:s.salary||0, foodWeekdayRate:s.foodWeekdayRate||0, foodWeekendRate:s.foodWeekendRate||0, fuel:s.fuel||0, easypass:s.easypass||0 })
+  const wdays=cntWD(month), wends=cntWE(month)
+  const set = (k,v) => setForm(f=>({...f,[k]:v}))
+  const save = () => { const u={}; for(const k in form) u[k]=Number(form[k])||0; dispatch({type:'UPDATE_SETTINGS',month,settings:u}); onClose() }
+  const preview = { inc:Number(form.salary), exp:Number(form.foodWeekdayRate)*wdays+Number(form.foodWeekendRate)*wends+Number(form.fuel)+Number(form.easypass) }
+  const net = preview.inc - preview.exp
+
+  const Field = ({label, field, hint}) => html`
+    <div class="mb-4">
+      <label class="text-sm font-semibold text-gray-600 mb-1 block">${label}</label>
+      ${hint && html`<p class="text-xs text-gray-400 mb-1">${hint}</p>`}
+      <div class="relative">
+        <input type="number" value=${form[field]} onInput=${e=>set(field,e.target.value)}
+          class="border border-gray-200 rounded-lg px-3 py-2 w-full text-right pr-8 focus:outline-none focus:ring-2 focus:ring-blue-300" min="0" />
+        <span class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">฿</span>
+      </div>
+    </div>
+  `
+
+  return html`<${Modal} onClose=${onClose} title="⚙️ ตั้งค่าเดือน ${MONTHS_TH[month]}" subtitle="พ.ศ. ${BE_YEAR}"
+    footer=${html`<div class="flex gap-3">
+      <button onClick=${onClose} class="flex-1 py-3 bg-gray-100 text-gray-600 rounded-xl font-semibold hover:bg-gray-200">ยกเลิก</button>
+      <button onClick=${save} class="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-sm">💾 บันทึก</button>
+    </div>`}
+  >
+    <div class="px-5 py-4">
+      <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-5">
+        <div class="text-sm font-semibold text-blue-700 mb-2">ตัวอย่างสรุปเดือนนี้</div>
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <div class="bg-green-100 rounded-lg p-2 text-center"><div class="text-green-600 font-bold">+${fmt(preview.inc)} ฿</div><div class="text-xs text-green-500">รายรับ</div></div>
+          <div class="bg-red-100 rounded-lg p-2 text-center"><div class="text-red-500 font-bold">-${fmt(preview.exp)} ฿</div><div class="text-xs text-red-400">รายจ่าย</div></div>
+        </div>
+        <div class="p-2 rounded-lg text-center text-sm font-bold ${net>=0?'bg-green-200 text-green-700':'bg-red-200 text-red-600'}">
+          ${net>=0?'✅ กำไร':'❌ ขาดทุน'} ${fmt(Math.abs(net))} ฿
+        </div>
+      </div>
+      <div class="font-bold text-gray-700 mb-3 flex items-center gap-2"><span class="w-2 h-2 bg-blue-500 rounded-full inline-block"></span> ยอดเงินยกมา</div>
+      <${Field} label="เงินในบัญชี (ยกมา)" field="openingBalance" hint="ยอดเงินคงเหลือจากเดือนก่อน" />
+      <div class="font-bold text-gray-700 mb-3 flex items-center gap-2"><span class="w-2 h-2 bg-green-500 rounded-full inline-block"></span> รายรับประจำ</div>
+      <${Field} label="เงินเดือน" field="salary" />
+      <div class="font-bold text-gray-700 mb-3 flex items-center gap-2"><span class="w-2 h-2 bg-red-500 rounded-full inline-block"></span> รายจ่ายประจำ</div>
+      <div class="mb-4">
+        <label class="text-sm font-semibold text-gray-600 mb-1 block">ค่าอาหาร จ-ส (ต่อวัน)</label>
+        <p class="text-xs text-gray-400 mb-1">เดือนนี้มี ${wdays} วัน (จ-ส) → รวม ${fmt(Number(form.foodWeekdayRate)*wdays)} ฿</p>
+        <div class="relative"><input type="number" value=${form.foodWeekdayRate} onInput=${e=>set('foodWeekdayRate',e.target.value)} class="border border-gray-200 rounded-lg px-3 py-2 w-full text-right pr-14 focus:outline-none focus:ring-2 focus:ring-blue-300" min="0" /><span class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs">฿/วัน</span></div>
+      </div>
+      <div class="mb-4">
+        <label class="text-sm font-semibold text-gray-600 mb-1 block">ค่าอาหาร อา (ต่อวัน)</label>
+        <p class="text-xs text-gray-400 mb-1">เดือนนี้มี ${wends} วัน (อาทิตย์) → รวม ${fmt(Number(form.foodWeekendRate)*wends)} ฿</p>
+        <div class="relative"><input type="number" value=${form.foodWeekendRate} onInput=${e=>set('foodWeekendRate',e.target.value)} class="border border-gray-200 rounded-lg px-3 py-2 w-full text-right pr-14 focus:outline-none focus:ring-2 focus:ring-blue-300" min="0" /><span class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs">฿/วัน</span></div>
+      </div>
+      <${Field} label="ค่าน้ำมัน (ต่อเดือน)" field="fuel" />
+      <${Field} label="ค่า Easypass (ต่อเดือน)" field="easypass" />
+    </div>
+  </>`
+}
+
+/* ══════════════════════════════════════
+   CALENDAR VIEW
+══════════════════════════════════════ */
+function CalendarView({ month, state, onDayClick }) {
+  const total = dim(month), first = fdow(month)
+  const cells = [...Array(first).fill(null), ...Array.from({length:total},(_,i)=>i+1)]
+  while(cells.length%7!==0) cells.push(null)
+
+  return html`
+    <div class="bg-white rounded-xl shadow-sm p-3">
+      <div class="grid grid-cols-7 mb-1">
+        ${DAY_NAMES.map((n,i)=>html`
+          <div key=${i} class="text-center text-xs font-bold py-1.5 ${i===0?'text-red-500':i===6?'text-orange-500':'text-gray-400'}">${n}</div>
+        `)}
+      </div>
+      <div class="grid grid-cols-7 gap-1">
+        ${cells.map((d,i)=>{
+          if(!d) return html`<div key=${i} class="min-h-[80px]"></div>`
+          const entries = state.months[month].days[String(d)] || []
+          const w=dowOf(month,d), isSun=w===0, isSat=w===6
+          const incT = entries.filter(e=>e.type==='income').reduce((s,e)=>s+Number(e.amount),0)
+          const expT = entries.filter(e=>e.type==='expense').reduce((s,e)=>s+Number(e.amount),0)
+          // unique companies for this day
+          const companies = [...new Set(entries.filter(e=>e.companyName).map(e=>e.companyName))]
+          return html`
+            <button key=${i} onClick=${()=>onDayClick(d)}
+              class="day-cell relative border rounded-xl p-1.5 text-left min-h-[80px] flex flex-col
+                ${isSun?'bg-red-50 border-red-100':isSat?'bg-orange-50 border-orange-100':'bg-white border-gray-100'}
+                ${entries.length>0?'ring-1 '+(isSun?'ring-red-200':isSat?'ring-orange-200':'ring-blue-100'):''}">
+              <div class="text-sm font-bold leading-none mb-1 ${isSun?'text-red-500':isSat?'text-orange-500':'text-gray-700'}">${d}</div>
+              ${incT>0 && html`<div class="text-xs text-green-600 font-semibold leading-tight truncate">+${fmt(incT)}</div>`}
+              ${expT>0 && html`<div class="text-xs text-red-500 font-semibold leading-tight truncate">-${fmt(expT)}</div>`}
+              ${companies.length>0 && html`
+                <div class="mt-auto pt-0.5">
+                  ${companies.slice(0,2).map(co=>html`
+                    <div class="text-blue-500 leading-tight truncate" style="font-size:9px">🏢 ${co}</div>
+                  `)}
+                  ${companies.length>2 && html`<div style="font-size:9px" class="text-gray-400">+${companies.length-2} อื่นๆ</div>`}
+                </div>
+              `}
+              ${entries.length>0 && html`
+                <div class="absolute top-1 right-1 flex gap-0.5">
+                  ${entries.some(e=>e.type==='income')&&html`<span class="w-1.5 h-1.5 bg-green-400 rounded-full"></span>`}
+                  ${entries.some(e=>e.type==='expense')&&html`<span class="w-1.5 h-1.5 bg-red-400 rounded-full"></span>`}
+                </div>
+              `}
+            </button>
+          `
+        })}
+      </div>
+      <div class="mt-3 pt-2 border-t flex gap-4 text-xs text-gray-400 flex-wrap">
+        <span class="flex items-center gap-1"><span class="w-2 h-2 bg-green-400 rounded-full inline-block"></span> รายรับ</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 bg-red-400 rounded-full inline-block"></span> รายจ่าย</span>
+        <span class="flex items-center gap-1 text-blue-400"><span>🏢</span> ชื่อบริษัท/ลูกค้า</span>
+        <span class="text-red-400">อา</span><span class="text-orange-400">ส</span>
+      </div>
+    </div>
+  `
+}
+
+/* ══════════════════════════════════════
+   MONTHLY SUMMARY
+══════════════════════════════════════ */
+function MonthlySummary({ month, state, dispatch }) {
+  const { s, wdays, wends, foodWD, foodWE, fuelF, easyF, salF, incE, expE,
+          customInc, customExp, totIncE, totalInc, totalExp, net, endBal, grpByCat } = buildSummaryData(state, month)
+
+  const [editF, setEditF] = useState(null)
+  const [editV, setEditV] = useState('')
+  const startEdit = (f,v) => { setEditF(f); setEditV(String(v)) }
+  const saveEdit  = () => { dispatch({type:'UPDATE_SETTINGS',month,settings:{[editF]:Number(editV)||0}}); setEditF(null) }
+
+  const [addingItem, setAddingItem] = useState(null)
+  const [newName, setNewName] = useState('')
+  const [newAmt,  setNewAmt]  = useState('')
+
+  const addItem = type => {
+    if (!newName.trim()||!newAmt) return
+    dispatch({type:'ADD_CUSTOM_ITEM',month,item:{name:newName.trim(),type,amount:Number(newAmt)||0}})
+    setNewName(''); setNewAmt(''); setAddingItem(null)
+  }
+
+  const InlineEdit = ({ field, label, value, clr='text-gray-700', sub=false }) => {
+    if (editF===field) return html`
+      <div class="flex items-center justify-between py-2 ${sub?'pl-5':''}">
+        <span class="text-sm text-gray-600 flex items-center gap-1">${sub?html`<span class="text-gray-200">└</span>`:''} ${label}</span>
+        <div class="flex items-center gap-1.5">
+          <input type="number" value=${editV} onInput=${e=>setEditV(e.target.value)}
+            class="border border-blue-400 rounded px-2 py-0.5 w-28 text-right text-sm focus:outline-none" autoFocus
+            onKeyDown=${e=>e.key==='Enter'&&saveEdit()} />
+          <span class="text-xs text-gray-400">฿</span>
+          <button onClick=${saveEdit} class="text-xs px-2 py-1 bg-green-500 text-white rounded hover:bg-green-600">✓</button>
+          <button onClick=${()=>setEditF(null)} class="text-xs px-2 py-1 bg-red-400 text-white rounded hover:bg-red-500">✕</button>
+        </div>
+      </div>
+    `
+    return html`
+      <div class="flex items-center justify-between py-2 ${sub?'pl-5':''}">
+        <span class="text-sm text-gray-700 flex items-center gap-1.5">
+          ${sub&&html`<span class="text-gray-200">└</span>`} ${label}
+          <button onClick=${()=>startEdit(field,value)} class="text-gray-300 hover:text-blue-500 text-xs" title="แก้ไข">✎</button>
+        </span>
+        <span class="font-mono text-sm ${clr}">${value>0||value<0?(clr.includes('green')?'+':clr.includes('red')?'-':''):''}${fmt(Math.abs(value))} ฿</span>
+      </div>
+    `
+  }
+
+  const CustomRow = ({ item }) => {
+    const [ed,setEd]=useState(false), [n,setN]=useState(item.name), [a,setA]=useState(String(item.amount))
+    const save=()=>{ dispatch({type:'UPDATE_CUSTOM_ITEM',month,itemId:item.id,updates:{name:n,amount:Number(a)||0}}); setEd(false) }
+    if(ed) return html`
+      <div class="flex items-center gap-1.5 pl-5 py-1.5">
+        <span class="text-gray-200">└</span>
+        <input value=${n} onInput=${e=>setN(e.target.value)} class="border border-blue-400 rounded px-2 py-0.5 text-sm w-28 focus:outline-none" autoFocus />
+        <input type="number" value=${a} onInput=${e=>setA(e.target.value)} class="border border-blue-400 rounded px-2 py-0.5 w-24 text-right text-sm focus:outline-none" />
+        <span class="text-xs text-gray-400">฿</span>
+        <button onClick=${save} class="text-xs px-1.5 py-1 bg-green-500 text-white rounded">✓</button>
+        <button onClick=${()=>setEd(false)} class="text-xs px-1.5 py-1 bg-red-400 text-white rounded">✕</button>
+      </div>
+    `
+    return html`
+      <div class="flex items-center justify-between py-1.5 pl-5">
+        <span class="text-sm text-gray-700 flex items-center gap-1.5">
+          <span class="text-gray-200">└</span>${item.name}
+          <button onClick=${()=>setEd(true)} class="text-gray-300 hover:text-blue-500 text-xs">✎</button>
+          <button onClick=${()=>dispatch({type:'REMOVE_CUSTOM_ITEM',month,itemId:item.id})} class="text-gray-300 hover:text-red-500 text-xs">✕</button>
+        </span>
+        <span class="font-mono text-sm ${item.type==='income'?'text-green-600':'text-red-500'}">
+          ${item.type==='income'?'+':'-'}${fmt(item.amount)} ฿
+        </span>
+      </div>
+    `
+  }
+
+  const grpByCatInc = grpByCat(incE), grpByCatExp = grpByCat(expE)
+
+  return html`<div class="space-y-4">
+    <!-- Hero -->
+    <div class="bg-gradient-to-br from-blue-900 via-blue-800 to-blue-600 rounded-xl shadow-lg p-5 text-white">
+      <div class="text-lg font-bold mb-0.5">สรุปรายเดือน ${MONTHS_TH[month]}</div>
+      <div class="text-blue-300 text-sm mb-4">พ.ศ. ${BE_YEAR}</div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div class="bg-white/10 backdrop-blur rounded-xl p-3">
+          <div class="text-green-300 text-xs mb-0.5">รายรับรวม</div>
+          <div class="text-green-200 font-bold text-xl">+${fmt(totalInc)} ฿</div>
+        </div>
+        <div class="bg-white/10 backdrop-blur rounded-xl p-3">
+          <div class="text-red-300 text-xs mb-0.5">รายจ่ายรวม</div>
+          <div class="text-red-200 font-bold text-xl">-${fmt(totalExp)} ฿</div>
+        </div>
+      </div>
+      <div class="bg-white/10 backdrop-blur rounded-xl p-3 flex items-center justify-between">
+        <div><div class="text-white/60 text-xs">ยอดเงินคงเหลือ</div><div class="text-xs text-white/40">เงินยกมา + รายรับ - รายจ่าย</div></div>
+        <div class="text-right">
+          <div class="text-2xl font-bold ${endBal>=0?'text-green-300':'text-red-300'}">${fmt(endBal)} ฿</div>
+          <div class="text-xs ${net>=0?'text-green-300':'text-red-300'}">${net>=0?'✅ กำไร':'❌ ขาดทุน'} ${fmt(Math.abs(net))} ฿</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Opening -->
+    <div class="bg-white rounded-xl shadow-sm p-4">
+      <div class="font-bold text-gray-700 mb-2 flex items-center gap-2"><span class="w-2 h-2 bg-blue-500 rounded-full"></span> เงินในบัญชี</div>
+      <${InlineEdit} field="openingBalance" label="เงินในบัญชี (ยกมา)" value=${Number(s.openingBalance||0)} clr="text-blue-600" />
+    </div>
+
+    <!-- Income -->
+    <div class="bg-white rounded-xl shadow-sm p-4">
+      <div class="font-bold text-gray-700 mb-2 flex items-center gap-2">
+        <span class="w-2 h-2 bg-green-500 rounded-full"></span> รายรับ รวม
+        <span class="text-green-600 font-mono font-normal text-sm">+${fmt(totalInc)} ฿</span>
+      </div>
+      <div class="divide-y divide-gray-50">
+        <${InlineEdit} field="salary" label="เงินเดือน" value=${salF} clr="text-green-600" sub=${true} />
+        ${customInc.map(item=>html`<${CustomRow} key=${item.id} item=${item} />`)}
+        ${incE.length>0&&html`
+          <div>
+            <div class="text-xs text-gray-400 pl-5 pt-2 pb-1">รายรับจากปฏิทิน (${incE.length} รายการ)</div>
+            ${grpByCatInc.map(([cat,total])=>html`
+              <div class="flex justify-between text-sm pl-8 py-1">
+                <span class="text-gray-500 flex items-center gap-1"><span class="text-gray-200">└</span> ${cat}</span>
+                <span class="text-green-600 font-mono">+${fmt(total)} ฿</span>
+              </div>
+            `)}
+          </div>
+        `}
+        ${addingItem==='income'?html`
+          <div class="flex items-center gap-1.5 pl-5 py-2">
+            <span class="text-gray-200">└</span>
+            <input value=${newName} onInput=${e=>setNewName(e.target.value)} placeholder="ชื่อรายการ" class="border border-blue-400 rounded px-2 py-1 text-sm w-28 focus:outline-none" autoFocus />
+            <input type="number" value=${newAmt} onInput=${e=>setNewAmt(e.target.value)} placeholder="จำนวน" class="border border-blue-400 rounded px-2 py-1 w-24 text-right text-sm focus:outline-none" onKeyDown=${e=>e.key==='Enter'&&addItem('income')} />
+            <span class="text-xs text-gray-400">฿</span>
+            <button onClick=${()=>addItem('income')} class="text-xs px-1.5 py-1 bg-green-500 text-white rounded">✓</button>
+            <button onClick=${()=>setAddingItem(null)} class="text-xs px-1.5 py-1 bg-red-400 text-white rounded">✕</button>
+          </div>
+        `:html`
+          <button onClick=${()=>{setAddingItem('income');setNewName('');setNewAmt('')}} class="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-600 pl-5 py-1.5">+ เพิ่มรายรับอื่นๆ</button>
+        `}
+        <div class="flex justify-between pt-2 border-t border-gray-100 mt-1">
+          <span class="font-semibold text-gray-700 text-sm">รายรับรวม</span>
+          <span class="font-bold text-green-600 font-mono">+${fmt(totalInc)} ฿</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Expenses -->
+    <div class="bg-white rounded-xl shadow-sm p-4">
+      <div class="font-bold text-gray-700 mb-2 flex items-center gap-2">
+        <span class="w-2 h-2 bg-red-500 rounded-full"></span> รายจ่าย รวม
+        <span class="text-red-500 font-mono font-normal text-sm">-${fmt(totalExp)} ฿</span>
+      </div>
+      <div class="divide-y divide-gray-50">
+        <!-- Food WD -->
+        <div class="py-2">
+          <div class="flex items-center justify-between pl-5">
+            <span class="text-sm text-gray-700 flex items-center gap-1.5">
+              <span class="text-gray-200">└</span> ค่าอาหาร จ-ส
+              <span class="text-xs text-gray-400">(${wdays}วัน × ${fmt(s.foodWeekdayRate||0)}฿)</span>
+              <button onClick=${()=>startEdit('foodWeekdayRate',s.foodWeekdayRate||0)} class="text-gray-300 hover:text-blue-500 text-xs">✎</button>
+            </span>
+            <span class="font-mono text-sm text-red-500">-${fmt(foodWD)} ฿</span>
+          </div>
+          ${editF==='foodWeekdayRate'&&html`
+            <div class="flex items-center gap-1.5 pl-8 mt-1.5">
+              <span class="text-xs text-gray-500">อัตราต่อวัน:</span>
+              <input type="number" value=${editV} onInput=${e=>setEditV(e.target.value)} class="border border-blue-400 rounded px-2 py-0.5 w-24 text-right text-sm focus:outline-none" autoFocus onKeyDown=${e=>e.key==='Enter'&&saveEdit()} />
+              <span class="text-xs text-gray-400">฿/วัน</span>
+              <button onClick=${saveEdit} class="text-xs px-1.5 py-1 bg-green-500 text-white rounded">✓</button>
+              <button onClick=${()=>setEditF(null)} class="text-xs px-1.5 py-1 bg-red-400 text-white rounded">✕</button>
+            </div>
+          `}
+        </div>
+        <!-- Food WE -->
+        <div class="py-2">
+          <div class="flex items-center justify-between pl-5">
+            <span class="text-sm text-gray-700 flex items-center gap-1.5">
+              <span class="text-gray-200">└</span> ค่าอาหาร อา
+              <span class="text-xs text-gray-400">(${wends}วัน × ${fmt(s.foodWeekendRate||0)}฿)</span>
+              <button onClick=${()=>startEdit('foodWeekendRate',s.foodWeekendRate||0)} class="text-gray-300 hover:text-blue-500 text-xs">✎</button>
+            </span>
+            <span class="font-mono text-sm text-red-500">-${fmt(foodWE)} ฿</span>
+          </div>
+          ${editF==='foodWeekendRate'&&html`
+            <div class="flex items-center gap-1.5 pl-8 mt-1.5">
+              <span class="text-xs text-gray-500">อัตราต่อวัน:</span>
+              <input type="number" value=${editV} onInput=${e=>setEditV(e.target.value)} class="border border-blue-400 rounded px-2 py-0.5 w-24 text-right text-sm focus:outline-none" autoFocus onKeyDown=${e=>e.key==='Enter'&&saveEdit()} />
+              <span class="text-xs text-gray-400">฿/วัน</span>
+              <button onClick=${saveEdit} class="text-xs px-1.5 py-1 bg-green-500 text-white rounded">✓</button>
+              <button onClick=${()=>setEditF(null)} class="text-xs px-1.5 py-1 bg-red-400 text-white rounded">✕</button>
+            </div>
+          `}
+        </div>
+        <${InlineEdit} field="fuel" label="ค่าน้ำมัน" value=${fuelF} clr="text-red-500" sub=${true} />
+        <${InlineEdit} field="easypass" label="ค่า Easypass" value=${easyF} clr="text-red-500" sub=${true} />
+        ${customExp.map(item=>html`<${CustomRow} key=${item.id} item=${item} />`)}
+        ${expE.length>0&&html`
+          <div>
+            <div class="text-xs text-gray-400 pl-5 pt-2 pb-1">รายจ่ายจากปฏิทิน (${expE.length} รายการ)</div>
+            ${grpByCatExp.map(([cat,total])=>html`
+              <div class="flex justify-between text-sm pl-8 py-1">
+                <span class="text-gray-500 flex items-center gap-1"><span class="text-gray-200">└</span> ${cat}</span>
+                <span class="text-red-500 font-mono">-${fmt(total)} ฿</span>
+              </div>
+            `)}
+          </div>
+        `}
+        ${addingItem==='expense'?html`
+          <div class="flex items-center gap-1.5 pl-5 py-2">
+            <span class="text-gray-200">└</span>
+            <input value=${newName} onInput=${e=>setNewName(e.target.value)} placeholder="ชื่อรายการ" class="border border-blue-400 rounded px-2 py-1 text-sm w-28 focus:outline-none" autoFocus />
+            <input type="number" value=${newAmt} onInput=${e=>setNewAmt(e.target.value)} placeholder="จำนวน" class="border border-blue-400 rounded px-2 py-1 w-24 text-right text-sm focus:outline-none" onKeyDown=${e=>e.key==='Enter'&&addItem('expense')} />
+            <span class="text-xs text-gray-400">฿</span>
+            <button onClick=${()=>addItem('expense')} class="text-xs px-1.5 py-1 bg-green-500 text-white rounded">✓</button>
+            <button onClick=${()=>setAddingItem(null)} class="text-xs px-1.5 py-1 bg-red-400 text-white rounded">✕</button>
+          </div>
+        `:html`
+          <button onClick=${()=>{setAddingItem('expense');setNewName('');setNewAmt('')}} class="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-600 pl-5 py-1.5">+ เพิ่มรายจ่ายอื่นๆ</button>
+        `}
+        <div class="flex justify-between pt-2 border-t border-gray-100 mt-1">
+          <span class="font-semibold text-gray-700 text-sm">รายจ่ายรวม</span>
+          <span class="font-bold text-red-500 font-mono">-${fmt(totalExp)} ฿</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Net -->
+    <div class="rounded-xl p-5 border-2 ${net>=0?'bg-green-50 border-green-200':'bg-red-50 border-red-200'}">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="font-bold text-gray-700 text-base">สรุปยอดเดือน ${MONTHS_TH[month]}</div>
+          <div class="text-sm text-gray-500 mt-0.5">${net>=0?'มีกำไรสุทธิ':'ขาดทุนสุทธิ'}ในเดือนนี้</div>
+        </div>
+        <div class="text-right">
+          <div class="text-3xl font-bold ${net>=0?'text-green-600':'text-red-500'}">${fmt(Math.abs(net))}</div>
+          <div class="text-sm text-gray-400">บาท</div>
+        </div>
+      </div>
+      <div class="mt-3 pt-3 border-t ${net>=0?'border-green-200':'border-red-200'} flex items-center justify-center gap-2">
+        <span class="text-2xl">${net>=0?'✅':'❌'}</span>
+        <span class="font-semibold ${net>=0?'text-green-700':'text-red-600'}">${net>=0?'กำไร':'ขาดทุน'} ${fmt(Math.abs(net))} บาท</span>
+      </div>
+    </div>
+  </div>`
+}
+
+/* ══════════════════════════════════════
+   PRINT MODAL
+══════════════════════════════════════ */
+function PrintModal({ month, state, onClose }) {
+  const doPrintAction = (mode) => { onClose(); setTimeout(() => doPrint(state, month, mode), 50) }
+  return html`<${Modal} onClose=${onClose} title="🖨️ พิมพ์ / บันทึก PDF" subtitle="${MONTHS_TH[month]} พ.ศ. ${BE_YEAR}"
+    accent="bg-gradient-to-r from-slate-700 to-slate-600">
+    <div class="p-5 space-y-3">
+      <p class="text-sm text-gray-500 mb-4">เลือกหน้าที่ต้องการพิมพ์หรือบันทึกเป็น PDF<br/><span class="text-xs text-gray-400">* เลือก "บันทึกเป็น PDF" ในหน้าต่างพิมพ์</span></p>
+
+      <button onClick=${()=>doPrintAction('calendar')}
+        class="w-full flex items-center gap-4 p-4 border-2 border-blue-200 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-all group">
+        <div class="w-12 h-12 rounded-xl bg-blue-100 group-hover:bg-blue-200 flex items-center justify-center text-2xl transition-colors">📅</div>
+        <div class="text-left">
+          <div class="font-bold text-gray-700">ปฏิทินรายวัน</div>
+          <div class="text-xs text-gray-400">พิมพ์ตารางปฏิทินพร้อมรายการแต่ละวัน (แนวตั้ง A4)</div>
+        </div>
+        <div class="ml-auto text-blue-400 group-hover:text-blue-600 text-xl">›</div>
+      </button>
+
+      <button onClick=${()=>doPrintAction('summary')}
+        class="w-full flex items-center gap-4 p-4 border-2 border-green-200 rounded-xl hover:border-green-500 hover:bg-green-50 transition-all group">
+        <div class="w-12 h-12 rounded-xl bg-green-100 group-hover:bg-green-200 flex items-center justify-center text-2xl transition-colors">📊</div>
+        <div class="text-left">
+          <div class="font-bold text-gray-700">สรุปรายรับ-รายจ่าย</div>
+          <div class="text-xs text-gray-400">พิมพ์สรุปยอดรวมทั้งเดือน (แนวตั้ง A4)</div>
+        </div>
+        <div class="ml-auto text-green-400 group-hover:text-green-600 text-xl">›</div>
+      </button>
+
+      <button onClick=${()=>doPrintAction('both')}
+        class="w-full flex items-center gap-4 p-4 border-2 border-purple-200 rounded-xl hover:border-purple-500 hover:bg-purple-50 transition-all group">
+        <div class="w-12 h-12 rounded-xl bg-purple-100 group-hover:bg-purple-200 flex items-center justify-center text-2xl transition-colors">📄</div>
+        <div class="text-left">
+          <div class="font-bold text-gray-700">ทั้งหมด (ปฏิทิน + สรุป)</div>
+          <div class="text-xs text-gray-400">พิมพ์รวมทั้งปฏิทินและหน้าสรุป (2+ หน้า)</div>
+        </div>
+        <div class="ml-auto text-purple-400 group-hover:text-purple-600 text-xl">›</div>
+      </button>
+    </div>
+  </>`
+}
+
+/* ══════════════════════════════════════
+   MAIN APP
+══════════════════════════════════════ */
+function App() {
+  const [state,   setState]   = useState(loadState)
+  const [month,   setMonth]   = useState(() => new Date().getMonth())
+  const [selDay,  setSelDay]  = useState(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const [showPrint,    setShowPrint]    = useState(false)
+  const [activeTab,    setActiveTab]    = useState('calendar')
+
+  const dispatch = useCallback((action) => {
+    setState(prev => { const next = applyAction(prev, action); saveState(next); return next })
+  }, [])
+
+  return html`
+    <div class="min-h-screen bg-slate-100">
+      <!-- Header -->
+      <header class="bg-gradient-to-r from-blue-900 to-blue-700 text-white shadow-lg no-print">
+        <div class="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span class="text-2xl">💰</span>
+            <div>
+              <div class="text-lg font-bold leading-tight">บัญชีรายรับ-รายจ่าย</div>
+              <div class="text-blue-300 text-xs">ปี พ.ศ. ${BE_YEAR}</div>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <!-- Print / PDF Button -->
+            <button onClick=${()=>setShowPrint(true)}
+              class="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-lg text-sm transition-colors border border-white/20">
+              🖨️ พิมพ์/PDF
+            </button>
+            <button onClick=${()=>setShowSettings(true)}
+              class="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-lg text-sm transition-colors">
+              ⚙️ ตั้งค่า
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Month Nav -->
+      <div class="bg-blue-700 text-white no-print">
+        <div class="max-w-2xl mx-auto px-4 py-2 flex items-center justify-between">
+          <button onClick=${()=>setMonth(m=>Math.max(0,m-1))} disabled=${month===0}
+            class="w-9 h-9 flex items-center justify-center rounded-full hover:bg-blue-600 disabled:opacity-25 disabled:cursor-not-allowed transition-colors text-xl">‹</button>
+          <div class="text-center">
+            <div class="text-xl font-bold">${MONTHS_TH[month]}</div>
+            <div class="text-blue-300 text-xs">พ.ศ. ${BE_YEAR}</div>
+          </div>
+          <button onClick=${()=>setMonth(m=>Math.min(11,m+1))} disabled=${month===11}
+            class="w-9 h-9 flex items-center justify-center rounded-full hover:bg-blue-600 disabled:opacity-25 disabled:cursor-not-allowed transition-colors text-xl">›</button>
+        </div>
+        <div class="max-w-2xl mx-auto px-4 pb-2 overflow-x-auto">
+          <div class="flex gap-1 min-w-max">
+            ${MONTHS_SHORT.map((m,i)=>html`
+              <button key=${i} onClick=${()=>setMonth(i)}
+                class="px-2 py-0.5 rounded text-xs transition-colors ${month===i?'bg-white text-blue-700 font-bold':'text-blue-300 hover:text-white hover:bg-blue-600'}">
+                ${m}
+              </button>
+            `)}
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabs + Print shortcut -->
+      <div class="max-w-2xl mx-auto px-4 mt-4 mb-3 no-print">
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex gap-2">
+            <button onClick=${()=>setActiveTab('calendar')}
+              class="px-4 py-2 rounded-xl text-sm font-semibold transition-colors ${activeTab==='calendar'?'bg-blue-600 text-white shadow-sm':'bg-white text-gray-500 hover:bg-gray-50'}">
+              📅 ปฏิทิน
+            </button>
+            <button onClick=${()=>setActiveTab('summary')}
+              class="px-4 py-2 rounded-xl text-sm font-semibold transition-colors ${activeTab==='summary'?'bg-blue-600 text-white shadow-sm':'bg-white text-gray-500 hover:bg-gray-50'}">
+              📊 สรุปรายเดือน
+            </button>
+          </div>
+          <!-- Quick print for current tab -->
+          <button onClick=${()=>doPrint(state, month, activeTab==='calendar'?'calendar':'summary')}
+            title="พิมพ์หน้านี้"
+            class="flex items-center gap-1.5 px-3 py-2 bg-white text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl text-sm font-medium border border-gray-200 hover:border-blue-200 transition-all">
+            🖨️ <span class="hidden sm:inline">พิมพ์หน้านี้</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Content -->
+      <main class="max-w-2xl mx-auto px-4 pb-8">
+        ${activeTab==='calendar'
+          ? html`<${CalendarView} month=${month} state=${state} onDayClick=${setSelDay} />`
+          : html`<${MonthlySummary} month=${month} state=${state} dispatch=${dispatch} />`
+        }
+      </main>
+
+      <!-- Modals -->
+      ${selDay!==null && html`<${DayModal} month=${month} day=${selDay} state=${state} dispatch=${dispatch} onClose=${()=>setSelDay(null)} />`}
+      ${showSettings && html`<${SettingsModal} month=${month} state=${state} dispatch=${dispatch} onClose=${()=>setShowSettings(false)} />`}
+      ${showPrint    && html`<${PrintModal} month=${month} state=${state} onClose=${()=>setShowPrint(false)} />`}
+    </div>
+  `
+}
+
+render(html`<${App} />`, document.getElementById('app'))
+</script>
+</body>
+</html>
