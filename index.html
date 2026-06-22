@@ -141,6 +141,19 @@ const loadState = () => {
   try { return normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')) }
   catch { return normalizeState({}) }
 }
+// มีข้อมูลจริงหรือยัง (ใช้กันข้อมูลว่างทับข้อมูลจริงตอน sync)
+const hasData = (s) => {
+  if (!s || !s.months) return false
+  if ((s.companies||[]).length>0) return true
+  for (const m of Object.values(s.months)) {
+    const days = m.days||{}
+    if (Object.keys(days).some(k=>(days[k]||[]).length>0)) return true
+    const st = m.settings||{}
+    if (['openingBalance','salary','foodWeekdayRate','foodWeekendRate','fuel','easypass','od'].some(k=>Number(st[k]))) return true
+    if ((st.customItems||[]).length>0) return true
+  }
+  return false
+}
 const saveState = s => localStorage.setItem(STORAGE_KEY, JSON.stringify(s))
 
 /* ══════════════════════════════════════
@@ -1155,18 +1168,20 @@ function App() {
     ;(async () => {
       const cloudData = await fetchCloud(session.uid)
       if (cancelled) return
-      if (cloudData && cloudData.months) {
-        const norm = normalizeState(cloudData)
+      if (cloudData && hasData(cloudData)) {
+        const norm = normalizeState(cloudData)   // cloud มีข้อมูลจริง → ใช้ของ cloud
         setState(norm); saveState(norm); setCloud('saved')
-      } else {
-        const ok = await pushCloud(session.uid, state)   // ครั้งแรก: อัปข้อมูลเครื่องนี้ขึ้น cloud
+      } else if (hasData(state)) {
+        const ok = await pushCloud(session.uid, state)   // cloud ว่าง แต่เครื่องนี้มีข้อมูล → ดันขึ้น
         setCloud(ok ? 'saved' : 'error')
+      } else {
+        setCloud('saved')   // ว่างทั้งคู่ ไม่ต้องทำอะไร
       }
     })()
-    // เปิดสลับหน้าต่าง/กลับมาที่แอป → ดึงข้อมูลล่าสุดจาก cloud
+    // เปิดสลับหน้าต่าง/กลับมาที่แอป → ดึงข้อมูลล่าสุดจาก cloud (เฉพาะถ้า cloud มีข้อมูลจริง)
     const onFocus = async () => {
       const c = await fetchCloud(session.uid)
-      if (c && c.months) { const n = normalizeState(c); setState(n); saveState(n) }
+      if (c && hasData(c)) { const n = normalizeState(c); setState(n); saveState(n) }
     }
     window.addEventListener('focus', onFocus)
     return () => { cancelled = true; window.removeEventListener('focus', onFocus) }
