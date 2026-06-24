@@ -130,6 +130,17 @@ const _TODAY    = new Date()
 const isCurMonth= m  => (_TODAY.getFullYear()===CE_YEAR && _TODAY.getMonth()===m)
 const startDay  = m  => isCurMonth(m) ? _TODAY.getDate() : 1
 const remTag    = m  => isCurMonth(m) ? 'เหลือ ' : ''
+// จำนวนวันปฏิทินที่เหลือในเดือน (รวมวันนี้) — เดือนอื่นคืนทั้งเดือน
+const remDays   = m  => isCurMonth(m) ? (dim(m) - _TODAY.getDate() + 1) : dim(m)
+// สัดส่วนของเดือนที่เหลือ (สำหรับรายจ่ายแบบเฉลี่ยทั้งเดือน เช่น ค่าน้ำมัน/Easypass)
+const proRata   = m  => remDays(m) / dim(m)
+// มูลค่ารายการกำหนดเองที่ "ยังต้องจ่าย" — ถ้ามี payDays (วันที่จ่าย) นับเฉพาะงวดที่ยังไม่ถึง (เฉพาะเดือนปัจจุบัน)
+const custEffective = (c, m) => {
+  const amt = Number(c.amount||0)
+  if (!isCurMonth(m) || !Array.isArray(c.payDays) || !c.payDays.length) return amt
+  const inst = amt / c.payDays.length
+  return inst * c.payDays.filter(d=>Number(d)>=_TODAY.getDate()).length
+}
 const cntWD   = m  => { let c=0; for(let d=startDay(m);d<=dim(m);d++) if(!isWE(m,d)) c++; return c }
 const cntWE   = m  => { let c=0; for(let d=startDay(m);d<=dim(m);d++) if(isWE(m,d)) c++; return c }
 const fmt     = n  => Number(n||0).toLocaleString('th-TH',{minimumFractionDigits:0,maximumFractionDigits:2})
@@ -223,13 +234,15 @@ function buildSummaryData(state, month) {
   const customExp = (s.customItems||[]).filter(c=>c.type==='expense')
   const foodWD = Number(s.foodWeekdayRate||0)*wdays
   const foodWE = Number(s.foodWeekendRate||0)*wends
-  const fuelF  = Number(s.fuel||0), easyF = Number(s.easypass||0)
+  const fuelBase = Number(s.fuel||0), easyBase = Number(s.easypass||0)
+  const pr = proRata(month)
+  const fuelF  = fuelBase * pr, easyF = easyBase * pr   // คิดตามสัดส่วนวันที่เหลือ
   const salF   = Number(s.salary||0)
   const odF    = Number(s.od||0)
   const totIncE = incE.reduce((a,e)=>a+Number(e.amount),0)
   const totExpE = expE.reduce((a,e)=>a+Number(e.amount),0)
-  const totCustInc = customInc.reduce((a,c)=>a+Number(c.amount),0)
-  const totCustExp = customExp.reduce((a,c)=>a+Number(c.amount),0)
+  const totCustInc = customInc.reduce((a,c)=>a+custEffective(c,month),0)
+  const totCustExp = customExp.reduce((a,c)=>a+custEffective(c,month),0)
   const totalInc = salF + totIncE + totCustInc
   const totalExp = foodWD + foodWE + fuelF + easyF + totExpE + totCustExp
   const net = totalInc - totalExp
@@ -240,7 +253,7 @@ function buildSummaryData(state, month) {
   incE.forEach(e=>{ const c=e.companyName||'(ไม่ระบุบริษัท)'; (coMap[c]=coMap[c]||{inc:0,exp:0}).inc+=Number(e.amount) })
   expE.forEach(e=>{ const c=e.companyName||'(ไม่ระบุบริษัท)'; (coMap[c]=coMap[c]||{inc:0,exp:0}).exp+=Number(e.amount) })
   const coRows = Object.entries(coMap).sort((a,b)=>(b[1].inc+b[1].exp)-(a[1].inc+a[1].exp))
-  return { s, wdays, wends, foodWD, foodWE, fuelF, easyF, salF, odF, incE, expE, customInc, customExp,
+  return { s, wdays, wends, foodWD, foodWE, fuelF, easyF, fuelBase, easyBase, salF, odF, incE, expE, customInc, customExp,
            totIncE, totExpE, totalInc, totalExp, net, endBal, grpByCat, coRows }
 }
 
@@ -324,7 +337,7 @@ function doPrint(state, month, mode) {
         <div class="section">
           <div class="section-title" style="border-color:#22c55e;color:#15803d">รายรับ</div>
           <div class="row indent"><span>เงินเดือน</span><span style="color:#15803d">+${fmt(salF)} ฿</span></div>
-          ${customInc.map(c=>`<div class="row indent"><span>${c.name}</span><span style="color:#15803d">+${fmt(c.amount)} ฿</span></div>`).join('')}
+          ${customInc.map(c=>`<div class="row indent"><span>${c.name}${(c.payDays&&c.payDays.length)?` (จ่ายวันที่ ${c.payDays.join(',')})`:''}</span><span style="color:#15803d">+${fmt(custEffective(c,month))} ฿</span></div>`).join('')}
           ${gI.map(([cat,tot])=>`<div class="row indent"><span>${cat} (จากปฏิทิน)</span><span style="color:#15803d">+${fmt(tot)} ฿</span></div>`).join('')}
           <div class="row bold" style="color:#15803d"><span>รายรับรวม</span><span>+${fmt(totalInc)} ฿</span></div>
         </div>
@@ -332,9 +345,9 @@ function doPrint(state, month, mode) {
           <div class="section-title" style="border-color:#ef4444;color:#dc2626">รายจ่าย</div>
           <div class="row indent"><span>ค่าอาหาร จ-ส (${remTag(month)}${wdays} วัน × ${fmt(s.foodWeekdayRate||0)} ฿)</span><span style="color:#dc2626">-${fmt(foodWD)} ฿</span></div>
           <div class="row indent"><span>ค่าอาหาร อา (${remTag(month)}${wends} วัน × ${fmt(s.foodWeekendRate||0)} ฿)</span><span style="color:#dc2626">-${fmt(foodWE)} ฿</span></div>
-          <div class="row indent"><span>ค่าน้ำมัน</span><span style="color:#dc2626">-${fmt(fuelF)} ฿</span></div>
-          <div class="row indent"><span>ค่า Easypass</span><span style="color:#dc2626">-${fmt(easyF)} ฿</span></div>
-          ${customExp.map(c=>`<div class="row indent"><span>${c.name}</span><span style="color:#dc2626">-${fmt(c.amount)} ฿</span></div>`).join('')}
+          <div class="row indent"><span>ค่าน้ำมัน${isCurMonth(month)?` (เหลือ ${remDays(month)}/${dim(month)} วัน)`:''}</span><span style="color:#dc2626">-${fmt(fuelF)} ฿</span></div>
+          <div class="row indent"><span>ค่า Easypass${isCurMonth(month)?` (เหลือ ${remDays(month)}/${dim(month)} วัน)`:''}</span><span style="color:#dc2626">-${fmt(easyF)} ฿</span></div>
+          ${customExp.map(c=>`<div class="row indent"><span>${c.name}${(c.payDays&&c.payDays.length)?` (จ่ายวันที่ ${c.payDays.join(',')})`:''}</span><span style="color:#dc2626">-${fmt(custEffective(c,month))} ฿</span></div>`).join('')}
           ${gE.map(([cat,tot])=>`<div class="row indent"><span>${cat} (จากปฏิทิน)</span><span style="color:#dc2626">-${fmt(tot)} ฿</span></div>`).join('')}
           <div class="row bold" style="color:#dc2626"><span>รายจ่ายรวม</span><span>-${fmt(totalExp)} ฿</span></div>
         </div>
@@ -610,7 +623,7 @@ function SettingsModal({ month, state, dispatch, onClose }) {
   const wdays=cntWD(month), wends=cntWE(month)
   const set = (k,v) => setForm(f=>({...f,[k]:v}))
   const save = () => { const u={}; for(const k in form) u[k]=Number(form[k])||0; dispatch({type:'UPDATE_SETTINGS',month,settings:u}); onClose() }
-  const preview = { inc:Number(form.salary), exp:Number(form.foodWeekdayRate)*wdays+Number(form.foodWeekendRate)*wends+Number(form.fuel)+Number(form.easypass) }
+  const preview = { inc:Number(form.salary), exp:Number(form.foodWeekdayRate)*wdays+Number(form.foodWeekendRate)*wends+(Number(form.fuel)+Number(form.easypass))*proRata(month) }
   const net = preview.inc - preview.exp
 
   const Field = ({label, field, hint}) => html`
@@ -760,26 +773,35 @@ function CalendarView({ month, state, onDayClick }) {
 ══════════════════════════════════════ */
 function CustomRow({ item, month, dispatch }) {
   const [ed,setEd]=useState(false), [n,setN]=useState(item.name), [a,setA]=useState(String(item.amount))
-  const save=()=>{ dispatch({type:'UPDATE_CUSTOM_ITEM',month,itemId:item.id,updates:{name:n,amount:Number(a)||0}}); setEd(false) }
+  const [pd,setPd]=useState((item.payDays||[]).join(','))
+  const save=()=>{
+    const payDays=[...new Set(pd.split(',').map(x=>parseInt(x.trim(),10)).filter(x=>x>=1&&x<=31))].sort((x,y)=>x-y)
+    dispatch({type:'UPDATE_CUSTOM_ITEM',month,itemId:item.id,updates:{name:n,amount:Number(a)||0,payDays}}); setEd(false)
+  }
   if(ed) return html`
-    <div class="flex items-center gap-1.5 pl-5 py-1.5">
+    <div class="flex flex-wrap items-center gap-1.5 pl-5 py-1.5">
       <span class="text-gray-200">└</span>
-      <input value=${n} onInput=${e=>setN(e.target.value)} class="border border-blue-400 rounded px-2 py-0.5 text-sm w-28 focus:outline-none" autoFocus />
-      <input type="number" value=${a} onInput=${e=>setA(e.target.value)} class="border border-blue-400 rounded px-2 py-0.5 w-24 text-right text-sm focus:outline-none" />
+      <input value=${n} onInput=${e=>setN(e.target.value)} placeholder="ชื่อ" class="border border-blue-400 rounded px-2 py-0.5 text-sm w-28 focus:outline-none" autoFocus />
+      <input type="number" value=${a} onInput=${e=>setA(e.target.value)} placeholder="จำนวน" class="border border-blue-400 rounded px-2 py-0.5 w-24 text-right text-sm focus:outline-none" />
       <span class="text-xs text-gray-400">฿</span>
+      <input value=${pd} onInput=${e=>setPd(e.target.value)} placeholder="วันจ่าย เช่น 1,16" title="เว้นว่าง = จ่ายเต็มทั้งเดือน" class="border border-gray-300 rounded px-2 py-0.5 text-sm w-32 focus:outline-none" />
       <button onClick=${save} class="text-xs px-1.5 py-1 bg-green-500 text-white rounded">✓</button>
       <button onClick=${()=>setEd(false)} class="text-xs px-1.5 py-1 bg-red-400 text-white rounded">✕</button>
     </div>
   `
+  const eff = custEffective(item, month)
+  const hasSched = Array.isArray(item.payDays) && item.payDays.length
+  const remCount = hasSched ? item.payDays.filter(d=>Number(d)>=_TODAY.getDate()).length : 0
   return html`
     <div class="flex items-center justify-between py-1.5 pl-5">
-      <span class="text-sm text-gray-700 flex items-center gap-1.5">
+      <span class="text-sm text-gray-700 flex items-center gap-1.5 flex-wrap">
         <span class="text-gray-200">└</span>${item.name}
+        ${hasSched?html`<span class="text-xs text-gray-400">(จ่ายวันที่ ${item.payDays.join(',')}${isCurMonth(month)?` · เหลือ ${remCount}/${item.payDays.length} งวด`:''})</span>`:''}
         <button onClick=${()=>setEd(true)} class="text-gray-300 hover:text-blue-500 text-xs">✎</button>
         <button onClick=${()=>dispatch({type:'REMOVE_CUSTOM_ITEM',month,itemId:item.id})} class="text-gray-300 hover:text-red-500 text-xs">✕</button>
       </span>
       <span class="font-mono text-sm ${item.type==='income'?'text-green-600':'text-red-500'}">
-        ${item.type==='income'?'+':'-'}${fmt(item.amount)} ฿
+        ${item.type==='income'?'+':'-'}${fmt(eff)} ฿
       </span>
     </div>
   `
@@ -789,7 +811,7 @@ function CustomRow({ item, month, dispatch }) {
    MONTHLY SUMMARY
 ══════════════════════════════════════ */
 function MonthlySummary({ month, state, dispatch }) {
-  const { s, wdays, wends, foodWD, foodWE, fuelF, easyF, salF, odF, incE, expE,
+  const { s, wdays, wends, foodWD, foodWE, fuelF, easyF, fuelBase, easyBase, salF, odF, incE, expE,
           customInc, customExp, totIncE, totalInc, totalExp, net, endBal, grpByCat, coRows } = buildSummaryData(state, month)
 
   const [editF, setEditF] = useState(null)
@@ -800,11 +822,13 @@ function MonthlySummary({ month, state, dispatch }) {
   const [addingItem, setAddingItem] = useState(null)
   const [newName, setNewName] = useState('')
   const [newAmt,  setNewAmt]  = useState('')
+  const [newPay,  setNewPay]  = useState('')
 
   const addItem = type => {
     if (!newName.trim()||!newAmt) return
-    dispatch({type:'ADD_CUSTOM_ITEM',month,item:{name:newName.trim(),type,amount:Number(newAmt)||0}})
-    setNewName(''); setNewAmt(''); setAddingItem(null)
+    const payDays=[...new Set(newPay.split(',').map(x=>parseInt(x.trim(),10)).filter(x=>x>=1&&x<=31))].sort((x,y)=>x-y)
+    dispatch({type:'ADD_CUSTOM_ITEM',month,item:{name:newName.trim(),type,amount:Number(newAmt)||0,payDays}})
+    setNewName(''); setNewAmt(''); setNewPay(''); setAddingItem(null)
   }
 
   const InlineEdit = ({ field, label, value, clr='text-gray-700', sub=false }) => {
@@ -907,11 +931,12 @@ function MonthlySummary({ month, state, dispatch }) {
           </div>
         `}
         ${addingItem==='income'?html`
-          <div class="flex items-center gap-1.5 pl-5 py-2">
+          <div class="flex flex-wrap items-center gap-1.5 pl-5 py-2">
             <span class="text-gray-200">└</span>
             <input value=${newName} onInput=${e=>setNewName(e.target.value)} placeholder="ชื่อรายการ" class="border border-blue-400 rounded px-2 py-1 text-sm w-28 focus:outline-none" autoFocus />
             <input type="number" value=${newAmt} onInput=${e=>setNewAmt(e.target.value)} placeholder="จำนวน" class="border border-blue-400 rounded px-2 py-1 w-24 text-right text-sm focus:outline-none" onKeyDown=${e=>e.key==='Enter'&&addItem('income')} />
             <span class="text-xs text-gray-400">฿</span>
+            <input value=${newPay} onInput=${e=>setNewPay(e.target.value)} placeholder="วันจ่าย (ไม่บังคับ)" title="เช่น 1,16 — เว้นว่าง = จ่ายเต็มทั้งเดือน" class="border border-gray-300 rounded px-2 py-1 text-sm w-32 focus:outline-none" />
             <button onClick=${()=>addItem('income')} class="text-xs px-1.5 py-1 bg-green-500 text-white rounded">✓</button>
             <button onClick=${()=>setAddingItem(null)} class="text-xs px-1.5 py-1 bg-red-400 text-white rounded">✕</button>
           </div>
@@ -972,8 +997,46 @@ function MonthlySummary({ month, state, dispatch }) {
             </div>
           `}
         </div>
-        ${InlineEdit({field:'fuel', label:'ค่าน้ำมัน', value:fuelF, clr:'text-red-500', sub:true})}
-        ${InlineEdit({field:'easypass', label:'ค่า Easypass', value:easyF, clr:'text-red-500', sub:true})}
+        <!-- Fuel (prorate ตามวันเหลือ) -->
+        <div class="py-2">
+          <div class="flex items-center justify-between pl-5">
+            <span class="text-sm text-gray-700 flex items-center gap-1.5">
+              <span class="text-gray-200">└</span> ค่าน้ำมัน
+              <span class="text-xs text-gray-400">${isCurMonth(month)?html`(เหลือ ${remDays(month)}/${dim(month)} วัน × เดือนละ ${fmt(fuelBase)}฿)`:html`(เดือนละ ${fmt(fuelBase)}฿)`}</span>
+              <button onClick=${()=>startEdit('fuel',fuelBase)} class="text-gray-300 hover:text-blue-500 text-xs">✎</button>
+            </span>
+            <span class="font-mono text-sm text-red-500">-${fmt(fuelF)} ฿</span>
+          </div>
+          ${editF==='fuel'&&html`
+            <div class="flex items-center gap-1.5 pl-8 mt-1.5">
+              <span class="text-xs text-gray-500">เดือนละ:</span>
+              <input type="number" value=${editV} onInput=${e=>setEditV(e.target.value)} class="border border-blue-400 rounded px-2 py-0.5 w-24 text-right text-sm focus:outline-none" autoFocus onKeyDown=${e=>e.key==='Enter'&&saveEdit()} />
+              <span class="text-xs text-gray-400">฿/เดือน</span>
+              <button onClick=${saveEdit} class="text-xs px-1.5 py-1 bg-green-500 text-white rounded">✓</button>
+              <button onClick=${()=>setEditF(null)} class="text-xs px-1.5 py-1 bg-red-400 text-white rounded">✕</button>
+            </div>
+          `}
+        </div>
+        <!-- Easypass (prorate ตามวันเหลือ) -->
+        <div class="py-2">
+          <div class="flex items-center justify-between pl-5">
+            <span class="text-sm text-gray-700 flex items-center gap-1.5">
+              <span class="text-gray-200">└</span> ค่า Easypass
+              <span class="text-xs text-gray-400">${isCurMonth(month)?html`(เหลือ ${remDays(month)}/${dim(month)} วัน × เดือนละ ${fmt(easyBase)}฿)`:html`(เดือนละ ${fmt(easyBase)}฿)`}</span>
+              <button onClick=${()=>startEdit('easypass',easyBase)} class="text-gray-300 hover:text-blue-500 text-xs">✎</button>
+            </span>
+            <span class="font-mono text-sm text-red-500">-${fmt(easyF)} ฿</span>
+          </div>
+          ${editF==='easypass'&&html`
+            <div class="flex items-center gap-1.5 pl-8 mt-1.5">
+              <span class="text-xs text-gray-500">เดือนละ:</span>
+              <input type="number" value=${editV} onInput=${e=>setEditV(e.target.value)} class="border border-blue-400 rounded px-2 py-0.5 w-24 text-right text-sm focus:outline-none" autoFocus onKeyDown=${e=>e.key==='Enter'&&saveEdit()} />
+              <span class="text-xs text-gray-400">฿/เดือน</span>
+              <button onClick=${saveEdit} class="text-xs px-1.5 py-1 bg-green-500 text-white rounded">✓</button>
+              <button onClick=${()=>setEditF(null)} class="text-xs px-1.5 py-1 bg-red-400 text-white rounded">✕</button>
+            </div>
+          `}
+        </div>
         ${customExp.map(item=>html`<${CustomRow} key=${item.id} item=${item} month=${month} dispatch=${dispatch} />`)}
         ${expE.length>0&&html`
           <div>
@@ -987,11 +1050,12 @@ function MonthlySummary({ month, state, dispatch }) {
           </div>
         `}
         ${addingItem==='expense'?html`
-          <div class="flex items-center gap-1.5 pl-5 py-2">
+          <div class="flex flex-wrap items-center gap-1.5 pl-5 py-2">
             <span class="text-gray-200">└</span>
             <input value=${newName} onInput=${e=>setNewName(e.target.value)} placeholder="ชื่อรายการ" class="border border-blue-400 rounded px-2 py-1 text-sm w-28 focus:outline-none" autoFocus />
             <input type="number" value=${newAmt} onInput=${e=>setNewAmt(e.target.value)} placeholder="จำนวน" class="border border-blue-400 rounded px-2 py-1 w-24 text-right text-sm focus:outline-none" onKeyDown=${e=>e.key==='Enter'&&addItem('expense')} />
             <span class="text-xs text-gray-400">฿</span>
+            <input value=${newPay} onInput=${e=>setNewPay(e.target.value)} placeholder="วันจ่าย (ไม่บังคับ)" title="เช่น 1,16 — เว้นว่าง = จ่ายเต็มทั้งเดือน" class="border border-gray-300 rounded px-2 py-1 text-sm w-32 focus:outline-none" />
             <button onClick=${()=>addItem('expense')} class="text-xs px-1.5 py-1 bg-green-500 text-white rounded">✓</button>
             <button onClick=${()=>setAddingItem(null)} class="text-xs px-1.5 py-1 bg-red-400 text-white rounded">✕</button>
           </div>
