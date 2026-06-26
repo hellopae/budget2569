@@ -63,7 +63,7 @@ import { h, render } from 'https://esm.sh/preact@10.23.2'
 import { useState, useCallback, useEffect, useRef } from 'https://esm.sh/preact@10.23.2/hooks'
 import htm from 'https://esm.sh/htm@3.1.1'
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js'
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut }
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail }
   from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js'
 import { getFirestore, doc, getDoc, setDoc }
   from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js'
@@ -1286,6 +1286,19 @@ function LoginScreen() {
     setBusy(false)
   }
 
+  const resetPw = async () => {
+    if (!email.trim()) { setMsg('⚠️ กรอกอีเมลก่อน แล้วกด "ลืมรหัสผ่าน" อีกครั้ง'); return }
+    setBusy(true); setMsg('')
+    try {
+      await sendPasswordResetEmail(fbAuth, email.trim())
+      setMsg('✅ ส่งลิงก์ตั้งรหัสผ่านใหม่ไปที่ ' + email.trim() + ' แล้ว — เช็คกล่องอีเมล (และโฟลเดอร์ Junk/Spam)')
+    } catch (e) {
+      const map = { 'auth/invalid-email':'รูปแบบอีเมลไม่ถูกต้อง', 'auth/user-not-found':'ไม่พบบัญชีอีเมลนี้' }
+      setMsg('⚠️ ' + (map[e.code] || e.message))
+    }
+    setBusy(false)
+  }
+
   return html`
     <div class="min-h-screen bg-gradient-to-br from-blue-900 via-blue-800 to-blue-600 flex items-center justify-center p-4">
       <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
@@ -1310,6 +1323,12 @@ function LoginScreen() {
           class="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-sm disabled:opacity-50">
           ${busy ? 'กำลังดำเนินการ...' : (mode==='login' ? '🔓 เข้าสู่ระบบ' : '✨ สมัครสมาชิก')}
         </button>
+        ${mode==='login' && html`
+          <button onClick=${resetPw} disabled=${busy}
+            class="w-full mt-3 text-sm text-blue-600 hover:text-blue-800 hover:underline disabled:opacity-50">
+            ลืมรหัสผ่าน? — ส่งลิงก์ตั้งรหัสใหม่ทางอีเมล
+          </button>
+        `}
       </div>
     </div>
   `

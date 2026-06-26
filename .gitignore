@@ -2,3 +2,6 @@ node_modules/
 .DS_Store
 .claude/settings.local.json
 *.ai
+# Firebase admin service account — ความลับระดับสูง ห้าม commit เด็ดขาด
+*-firebase-adminsdk-*.json
+serviceAccount*.json
