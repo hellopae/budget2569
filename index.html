@@ -142,6 +142,10 @@ const custEffective = (c, m) => {
   const inst = amt / c.payDays.length
   return inst * c.payDays.filter(d=>Number(d)>=_TODAY.getDate()).length
 }
+// รายการประจำของวันนั้น (virtual entries) — แสดงในปฏิทินทุกเดือน
+const recForDay = (state, m, d) => (state.recurring||[])
+  .filter(r=>Number(r.day)===d && d<=dim(m))
+  .map(r=>({ id:'rec_'+r.id, recId:r.id, recurring:true, type:r.type, companyName:r.name, category:r.name, amount:Number(r.amount||0), day:d }))
 const cntWD   = m  => { let c=0; for(let d=startDay(m);d<=dim(m);d++) if(!isWE(m,d)) c++; return c }
 const cntWE   = m  => { let c=0; for(let d=startDay(m);d<=dim(m);d++) if(isWE(m,d)) c++; return c }
 const fmt     = n  => Number(n||0).toLocaleString('th-TH',{minimumFractionDigits:0,maximumFractionDigits:2})
@@ -152,7 +156,7 @@ const defSettings = () => ({ openingBalance:0, salary:0, foodWeekdayRate:0, food
 const normalizeState = (p) => {
   const months = {}
   for (let i=0;i<12;i++) months[i] = { settings:{...defSettings(),...(p?.months?.[i]?.settings||{})}, days:p?.months?.[i]?.days||{} }
-  return { months, companies: Array.isArray(p?.companies)?p.companies:[] }
+  return { months, companies: Array.isArray(p?.companies)?p.companies:[], recurring: Array.isArray(p?.recurring)?p.recurring:[] }
 }
 const loadState = () => {
   try { return normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')) }
@@ -162,6 +166,7 @@ const loadState = () => {
 const hasData = (s) => {
   if (!s || !s.months) return false
   if ((s.companies||[]).length>0) return true
+  if ((s.recurring||[]).length>0) return true
   for (const m of Object.values(s.months)) {
     const days = m.days||{}
     if (Object.keys(days).some(k=>(days[k]||[]).length>0)) return true
@@ -208,6 +213,12 @@ function applyAction(prev, action) {
     }
     case 'REMOVE_COMPANY':
       return { ...prev, companies:(prev.companies||[]).filter(c=>c!==action.name) }
+    case 'ADD_RECURRING':
+      return { ...prev, recurring:[...(prev.recurring||[]), {...action.item, id:genId()}] }
+    case 'UPDATE_RECURRING':
+      return { ...prev, recurring:(prev.recurring||[]).map(r=>r.id===action.itemId?{...r,...action.updates}:r) }
+    case 'REMOVE_RECURRING':
+      return { ...prev, recurring:(prev.recurring||[]).filter(r=>r.id!==action.itemId) }
     case 'RENAME_COMPANY': {
       const nn=(action.newName||'').trim(); if(!nn) return prev
       const months2={}
@@ -229,6 +240,13 @@ function buildSummaryData(state, month) {
   const s = state.months[month].settings
   const allE = []
   for (const [d,entries] of Object.entries(state.months[month].days||{})) entries.forEach(e=>allE.push({...e,day:Number(d)}))
+  // รายการประจำ → นับเข้าสรุป (เดือนปัจจุบันนับเฉพาะที่ยังไม่ถึงวันจ่าย = ยังต้องจ่าย, เดือนอื่นนับเต็ม)
+  ;(state.recurring||[]).forEach(r=>{
+    const day=Number(r.day)
+    if (day>dim(month)) return
+    if (isCurMonth(month) && day<_TODAY.getDate()) return
+    allE.push({ type:r.type, companyName:r.name, category:r.name, amount:Number(r.amount||0), day, recurring:true })
+  })
   const incE = allE.filter(e=>e.type==='income'), expE = allE.filter(e=>e.type==='expense')
   const wdays = cntWD(month), wends = cntWE(month)
   const customInc = (s.customItems||[]).filter(c=>c.type==='income')
@@ -302,13 +320,13 @@ function doPrint(state, month, mode) {
     `).join('')
     const body = cells.map(d=>{
       if(!d) return `<div style="border:1px solid transparent;min-height:78px"></div>`
-      const entries=state.months[month].days[String(d)]||[]
+      const entries=[...(state.months[month].days[String(d)]||[]), ...recForDay(state, month, d)]
       const w=dowOf(month,d),isSun=w===0,isSat=w===6
       const bg=isSun?'#fef2f2':isSat?'#fff7ed':'white'
       const nc=isSun?'#ef4444':isSat?'#f97316':'#111827'
       const eHTML=entries.map(e=>`
         <div class="entry" style="color:${e.type==='income'?'#15803d':'#dc2626'}">
-          <b>${e.companyName||e.category||'รายการ'}</b> ${e.type==='income'?'+':'-'}${fmt(e.amount)}
+          <b>${e.recurring?'🔁':''}${e.companyName||e.category||'รายการ'}</b> ${e.type==='income'?'+':'-'}${fmt(e.amount)}
         </div>`).join('')
       return `<div class="cal-cell" style="background:${bg}"><div class="cal-num" style="color:${nc}">${d}</div>${eHTML}</div>`
     }).join('')
@@ -429,7 +447,7 @@ function Modal({ onClose, title, subtitle, accent='bg-gradient-to-r from-blue-80
    DAY MODAL  (+ companyName field)
 ══════════════════════════════════════ */
 function DayModal({ month, day, state, dispatch, onClose }) {
-  const entries = state.months[month].days[String(day)] || []
+  const entries = [...(state.months[month].days[String(day)] || []), ...recForDay(state, month, day)]
   const weekend = isWE(month, day)
   const [showForm, setShowForm] = useState(false)
   const [eType,   setEType]   = useState('expense')
@@ -493,19 +511,26 @@ function DayModal({ month, day, state, dispatch, onClose }) {
               <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${e.type==='income'?'bg-green-100 text-green-700':'bg-red-100 text-red-600'}">
                 ${e.type==='income'?'▲ รับ':'▼ จ่าย'}
               </span>
-              ${e.companyName
+              ${e.recurring
+                ? html`<span class="text-sm font-bold text-gray-800">🔁 ${e.companyName||e.category}</span>`
+                : e.companyName
                 ? html`<span class="text-sm font-bold text-gray-800">🏢 ${e.companyName}</span>`
                 : html`<span class="text-sm font-medium text-gray-700">${e.category||''}</span>`}
+              ${e.recurring && html`<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-600">ประจำทุกเดือน</span>`}
             </div>
-            ${e.companyName && e.category && html`<div class="text-xs text-gray-500 mt-0.5 ml-1">${e.category}</div>`}
+            ${!e.recurring && e.companyName && e.category && html`<div class="text-xs text-gray-500 mt-0.5 ml-1">${e.category}</div>`}
             ${e.description && html`<div class="text-xs text-gray-400 mt-0.5 ml-1 italic">${e.description}</div>`}
           </div>
           <div class="flex items-center gap-1.5 flex-shrink-0 pt-0.5">
             <span class="font-mono font-bold text-sm ${e.type==='income'?'text-green-600':'text-red-500'}">
               ${e.type==='income'?'+':'-'}${fmt(e.amount)}
             </span>
-            <button onClick=${()=>startEdit(e)} class="w-7 h-7 flex items-center justify-center rounded-full bg-blue-100 hover:bg-blue-200 text-blue-600 text-xs" title="แก้ไข">✎</button>
-            <button onClick=${()=>dispatch({type:'REMOVE_ENTRY',month,day,entryId:e.id})} class="w-7 h-7 flex items-center justify-center rounded-full bg-red-100 hover:bg-red-200 text-red-500 text-xs" title="ลบ">✕</button>
+            ${e.recurring
+              ? html`<span class="text-[10px] text-gray-400" title="แก้ที่ ตั้งค่า → รายการประจำ">⚙️</span>`
+              : html`
+                <button onClick=${()=>startEdit(e)} class="w-7 h-7 flex items-center justify-center rounded-full bg-blue-100 hover:bg-blue-200 text-blue-600 text-xs" title="แก้ไข">✎</button>
+                <button onClick=${()=>dispatch({type:'REMOVE_ENTRY',month,day,entryId:e.id})} class="w-7 h-7 flex items-center justify-center rounded-full bg-red-100 hover:bg-red-200 text-red-500 text-xs" title="ลบ">✕</button>
+              `}
           </div>
         </div>
       `)}
@@ -621,6 +646,16 @@ function SettingsModal({ month, state, dispatch, onClose }) {
   const [coNew, setCoNew] = useState('')
   const [coEdit, setCoEdit] = useState(null)
   const [coEditVal, setCoEditVal] = useState('')
+  const recurring = state.recurring || []
+  const [recType, setRecType] = useState('expense')
+  const [recName, setRecName] = useState('')
+  const [recAmt,  setRecAmt]  = useState('')
+  const [recDay,  setRecDay]  = useState('')
+  const addRec = () => {
+    if (!recName.trim() || !recAmt || !recDay) return
+    dispatch({type:'ADD_RECURRING',item:{type:recType,name:recName.trim(),amount:Number(recAmt)||0,day:Math.min(31,Math.max(1,Number(recDay)||1))}})
+    setRecName(''); setRecAmt(''); setRecDay('')
+  }
   const wdays=cntWD(month), wends=cntWE(month)
   const set = (k,v) => setForm(f=>({...f,[k]:v}))
   const save = () => { const u={}; for(const k in form) u[k]=Number(form[k])||0; dispatch({type:'UPDATE_SETTINGS',month,settings:u}); onClose() }
@@ -700,6 +735,27 @@ function SettingsModal({ month, state, dispatch, onClose }) {
             `)}
           </div>`
       }
+
+      <!-- Recurring items manager -->
+      <div class="font-bold text-gray-700 mb-2 flex items-center gap-2"><span class="w-2 h-2 bg-indigo-500 rounded-full inline-block"></span> รายการประจำ (ขึ้นทุกเดือนอัตโนมัติ)</div>
+      <p class="text-xs text-gray-400 mb-2">รับ/จ่ายที่จ่ายประจำวันเดิมทุกเดือน เช่น เงินเดือน, ค่าบ้าน, ค่าน้ำ/ไฟ — ตั้งครั้งเดียวขึ้นทุกเดือนเอง (ทั้งในปฏิทินและสรุป)</p>
+      <div class="bg-gray-50 rounded-xl p-3 mb-2">
+        <div class="flex flex-wrap items-center gap-1.5">
+          <select value=${recType} onChange=${e=>setRecType(e.target.value)} class="border border-gray-300 rounded px-1 py-1.5 text-sm">
+            <option value="expense">จ่าย</option><option value="income">รับ</option>
+          </select>
+          <input value=${recName} onInput=${e=>setRecName(e.target.value)} placeholder="ชื่อ เช่น ค่าบ้าน" class="border border-gray-300 rounded px-2 py-1.5 text-sm w-32 focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+          <input type="number" value=${recAmt} onInput=${e=>setRecAmt(e.target.value)} placeholder="จำนวน" class="border border-gray-300 rounded px-2 py-1.5 text-sm w-24 text-right focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+          <span class="text-xs text-gray-400">฿ วันที่</span>
+          <input type="number" value=${recDay} onInput=${e=>setRecDay(e.target.value)} placeholder="1-31" min="1" max="31" class="border border-gray-300 rounded px-2 py-1.5 text-sm w-16 text-right focus:outline-none focus:ring-2 focus:ring-indigo-300" onKeyDown=${e=>e.key==='Enter'&&addRec()} />
+          <button onClick=${addRec} class="px-3 py-1.5 bg-indigo-500 text-white rounded-lg text-sm font-semibold hover:bg-indigo-600">+ เพิ่ม</button>
+        </div>
+      </div>
+      ${recurring.length===0
+        ? html`<div class="text-xs text-gray-300 mb-5 text-center py-2">ยังไม่มีรายการประจำ — เพิ่มด้านบน เช่น เงินเดือนลูกน้อง 13,080 วันที่ 1</div>`
+        : html`<div class="mb-5">${recurring.slice().sort((a,b)=>a.day-b.day).map(item=>html`<${RecurringRow} key=${item.id} item=${item} dispatch=${dispatch} />`)}</div>`
+      }
+
       <div class="font-bold text-gray-700 mb-3 flex items-center gap-2"><span class="w-2 h-2 bg-green-500 rounded-full inline-block"></span> รายรับประจำ</div>
       ${Field({label:'เงินเดือน', field:'salary'})}
       <div class="font-bold text-gray-700 mb-3 flex items-center gap-2"><span class="w-2 h-2 bg-red-500 rounded-full inline-block"></span> รายจ่ายประจำ</div>
@@ -737,7 +793,7 @@ function CalendarView({ month, state, onDayClick }) {
       <div class="grid grid-cols-7 gap-1">
         ${cells.map((d,i)=>{
           if(!d) return html`<div key=${i} class="min-h-[80px]"></div>`
-          const entries = state.months[month].days[String(d)] || []
+          const entries = [...(state.months[month].days[String(d)] || []), ...recForDay(state, month, d)]
           const w=dowOf(month,d), isSun=w===0, isSat=w===6
           const isToday = isCurMonth(month) && d===_TODAY.getDate()
           const MAXROWS = 5
@@ -752,8 +808,8 @@ function CalendarView({ month, state, onDayClick }) {
               </div>
               <div class="flex flex-col gap-px overflow-hidden">
                 ${entries.slice(0,MAXROWS).map(e=>html`
-                  <div key=${e.id} class="leading-tight mb-0.5 ${e.type==='income'?'text-green-600':'text-red-500'}">
-                    <div class="truncate font-medium" style="font-size:9px;line-height:1.15">${e.companyName||e.category||'รายการ'}</div>
+                  <div key=${e.id} class="leading-tight mb-0.5 ${e.type==='income'?'text-green-600':'text-red-500'} ${e.recurring?'opacity-80':''}">
+                    <div class="truncate font-medium" style="font-size:9px;line-height:1.15">${e.recurring?'🔁':''}${e.companyName||e.category||'รายการ'}</div>
                     <div class="font-bold truncate" style="font-size:10px;line-height:1.15">${e.type==='income'?'+':'-'}${fmt(e.amount)}</div>
                   </div>
                 `)}
@@ -810,6 +866,40 @@ function CustomRow({ item, month, dispatch }) {
       </span>
     </div>
   `
+}
+
+/* ══════════════════════════════════════
+   RECURRING ROW (module scope)
+══════════════════════════════════════ */
+function RecurringRow({ item, dispatch }) {
+  const [ed,setEd]=useState(false)
+  const [n,setN]=useState(item.name),[a,setA]=useState(String(item.amount)),[d,setD]=useState(String(item.day)),[t,setT]=useState(item.type)
+  const save=()=>{ if(!n.trim())return; dispatch({type:'UPDATE_RECURRING',itemId:item.id,updates:{name:n.trim(),amount:Number(a)||0,day:Math.min(31,Math.max(1,Number(d)||1)),type:t}}); setEd(false) }
+  if(ed) return html`
+    <div class="flex flex-wrap items-center gap-1.5 py-2 bg-indigo-50 rounded-lg px-2 my-1">
+      <select value=${t} onChange=${e=>setT(e.target.value)} class="border border-gray-300 rounded px-1 py-1 text-sm">
+        <option value="expense">จ่าย</option><option value="income">รับ</option>
+      </select>
+      <input value=${n} onInput=${e=>setN(e.target.value)} placeholder="ชื่อ" class="border border-blue-400 rounded px-2 py-1 text-sm w-28 focus:outline-none" />
+      <input type="number" value=${a} onInput=${e=>setA(e.target.value)} placeholder="จำนวน" class="border border-blue-400 rounded px-2 py-1 text-sm w-24 text-right focus:outline-none" />
+      <span class="text-xs text-gray-400">฿ วันที่</span>
+      <input type="number" value=${d} onInput=${e=>setD(e.target.value)} min="1" max="31" class="border border-blue-400 rounded px-2 py-1 text-sm w-14 text-right focus:outline-none" />
+      <button onClick=${save} class="text-xs px-2 py-1 bg-green-500 text-white rounded">✓</button>
+      <button onClick=${()=>setEd(false)} class="text-xs px-2 py-1 bg-gray-300 text-white rounded">✕</button>
+    </div>`
+  return html`
+    <div class="flex items-center justify-between py-1.5 border-b border-gray-50">
+      <span class="text-sm flex items-center gap-1.5 flex-wrap">
+        <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${item.type==='income'?'bg-green-100 text-green-700':'bg-red-100 text-red-600'}">${item.type==='income'?'รับ':'จ่าย'}</span>
+        <span class="font-medium text-gray-700">${item.name}</span>
+        <span class="text-xs text-gray-400">· ทุกวันที่ ${item.day}</span>
+      </span>
+      <span class="flex items-center gap-2 flex-shrink-0">
+        <span class="font-mono text-sm ${item.type==='income'?'text-green-600':'text-red-500'}">${item.type==='income'?'+':'-'}${fmt(item.amount)}</span>
+        <button onClick=${()=>setEd(true)} class="text-gray-300 hover:text-blue-500 text-xs">✎</button>
+        <button onClick=${()=>dispatch({type:'REMOVE_RECURRING',itemId:item.id})} class="text-gray-300 hover:text-red-500 text-xs">✕</button>
+      </span>
+    </div>`
 }
 
 /* ══════════════════════════════════════
