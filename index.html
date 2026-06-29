@@ -808,7 +808,7 @@ function CalendarView({ month, state, onDayClick }) {
               </div>
               <div class="flex flex-col gap-px overflow-hidden">
                 ${entries.slice(0,MAXROWS).map(e=>html`
-                  <div key=${e.id} class="leading-tight mb-0.5 ${e.type==='income'?'text-green-600':'text-red-500'} ${e.recurring?'opacity-80':''}">
+                  <div key=${e.id} class="leading-tight mb-0.5 ${(e.recurring&&isCurMonth(month)&&d<_TODAY.getDate())?'opacity-35 text-gray-400':(e.type==='income'?'text-green-600':'text-red-500')}">
                     <div class="truncate font-medium" style="font-size:9px;line-height:1.15">${e.recurring?'🔁':''}${e.companyName||e.category||'รายการ'}</div>
                     <div class="font-bold truncate" style="font-size:10px;line-height:1.15">${e.type==='income'?'+':'-'}${fmt(e.amount)}</div>
                   </div>
